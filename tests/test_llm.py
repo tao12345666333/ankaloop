@@ -554,3 +554,57 @@ class TestAnthropicClient:
         assert response.usage.prompt_tokens == 140
         assert response.usage.output_tokens == 20
         assert response.usage.cached_input_tokens == 30
+
+
+class TestRequestHeaders:
+    """Tests for provider request header injection (app attribution)."""
+
+    def test_openrouter_endpoint_injects_attribution_headers(self):
+        cfg = ChatConfig(
+            api_type="openai",
+            base_url="https://openrouter.ai/api/v1",
+            model="test-model",
+            api_key="test-key",
+        )
+        client = create_llm_client(cfg)
+        headers = client.client.client.default_headers
+        assert headers["HTTP-Referer"] == "https://github.com/tao12345666333/ankaloop"
+        assert headers["X-OpenRouter-Title"] == "AnkaLoop"
+        assert headers["X-OpenRouter-Categories"] == "personal-agent"
+
+    def test_non_openrouter_endpoint_gets_no_attribution_headers(self):
+        cfg = ChatConfig(api_type="openai", model="test-model", api_key="test-key")
+        client = create_llm_client(cfg)
+        headers = client.client.client.default_headers
+        assert "HTTP-Referer" not in headers
+        assert "X-OpenRouter-Title" not in headers
+
+    def test_explicit_headers_override_attribution_defaults(self):
+        cfg = ChatConfig(
+            api_type="openai",
+            base_url="https://openrouter.ai/api/v1",
+            model="test-model",
+            api_key="test-key",
+            extra_headers={"HTTP-Referer": "https://myapp.example", "X-Custom": "yes"},
+        )
+        client = create_llm_client(cfg)
+        headers = client.client.client.default_headers
+        assert headers["HTTP-Referer"] == "https://myapp.example"
+        assert headers["X-Custom"] == "yes"
+        # title still defaulted since not explicitly set
+        assert headers["X-OpenRouter-Title"] == "AnkaLoop"
+
+    def test_env_overrides_attribution_defaults(self, monkeypatch):
+        monkeypatch.setenv("ANKA_APP_URL", "https://example.com")
+        monkeypatch.setenv("ANKA_APP_NAME", "MyApp")
+        monkeypatch.setenv("ANKA_APP_CATEGORIES", "")
+        from ankaloop.llm import _build_request_headers
+
+        headers = _build_request_headers(
+            base_url="https://openrouter.ai/api/v1",
+            api_type=None,
+            extra_headers=None,
+        )
+        assert headers["HTTP-Referer"] == "https://example.com"
+        assert headers["X-OpenRouter-Title"] == "MyApp"
+        assert "X-OpenRouter-Categories" not in headers
