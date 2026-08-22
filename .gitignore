@@ -6,6 +6,9 @@ __pycache__/
 # Plan files (not tracked)
 plan.md
 
+# Local dev-workspace runbook (not tracked; contains environment layout)
+DEV.md
+
 # C extensions
 *.so
 
