@@ -984,7 +984,7 @@ def _build_request_headers(
         headers.setdefault("X-OpenRouter-Title", os.environ.get("ANKA_APP_NAME", "AnkaLoop"))
         categories = os.environ.get("ANKA_APP_CATEGORIES")
         if categories is None:
-            headers.setdefault("X-OpenRouter-Categories", "personal-agent")
+            headers.setdefault("X-OpenRouter-Categories", "personal-agent,cli-agent")
         elif categories:
             headers.setdefault("X-OpenRouter-Categories", categories)
     return headers or None

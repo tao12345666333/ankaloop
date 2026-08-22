@@ -570,7 +570,7 @@ class TestRequestHeaders:
         headers = client.client.client.default_headers
         assert headers["HTTP-Referer"] == "https://github.com/tao12345666333/ankaloop"
         assert headers["X-OpenRouter-Title"] == "AnkaLoop"
-        assert headers["X-OpenRouter-Categories"] == "personal-agent"
+        assert headers["X-OpenRouter-Categories"] == "personal-agent,cli-agent"
 
     def test_non_openrouter_endpoint_gets_no_attribution_headers(self):
         cfg = ChatConfig(api_type="openai", model="test-model", api_key="test-key")
