@@ -72,6 +72,7 @@ class ChatProviderConfig:
     request_timeout_seconds: float | None = None
     max_retries: int | None = None
     retry_base_delay_seconds: float | None = None
+    extra_headers: dict[str, str] | None = None  # custom HTTP headers (e.g. OpenRouter attribution)
 
 
 @dataclass
@@ -94,6 +95,9 @@ class ChatConfig:
     # into the top-level chat fields at load time so existing call sites keep working.
     active_provider: str | None = None
     providers: dict[str, ChatProviderConfig] = field(default_factory=dict)
+
+    # Custom HTTP headers forwarded to the LLM provider (e.g. OpenRouter app attribution).
+    extra_headers: dict[str, str] | None = None
 
     # Tool calling settings
     tool_loop_limit: int | None = None
@@ -364,6 +368,10 @@ def _decode_chat_provider(raw: Mapping[str, object]) -> ChatProviderConfig:
     retry_base_delay_seconds = raw.get("retry_base_delay_seconds")
     raw_model_config = raw.get("model_config")
     model_config = _decode_model_config(raw_model_config) if isinstance(raw_model_config, dict) else None
+    raw_extra_headers = raw.get("extra_headers")
+    extra_headers: dict[str, str] | None = None
+    if isinstance(raw_extra_headers, dict):
+        extra_headers = {str(k): str(v) for k, v in raw_extra_headers.items()}
     return ChatProviderConfig(
         base_url=str(base_url) if base_url is not None else None,
         model=str(model) if model is not None else None,
@@ -375,6 +383,7 @@ def _decode_chat_provider(raw: Mapping[str, object]) -> ChatProviderConfig:
         retry_base_delay_seconds=(
             float(str(retry_base_delay_seconds)) if retry_base_delay_seconds is not None else None
         ),
+        extra_headers=extra_headers,
     )
 
 
@@ -405,6 +414,8 @@ def _apply_active_provider(chat: ChatConfig) -> ChatConfig:
         chat.max_retries = provider.max_retries
     if provider.retry_base_delay_seconds is not None:
         chat.retry_base_delay_seconds = provider.retry_base_delay_seconds
+    if provider.extra_headers is not None:
+        chat.extra_headers = provider.extra_headers
     return chat
 
 
@@ -435,6 +446,10 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
     # Model config
     raw_model_config = raw.get("model_config")
     model_config = _decode_model_config(raw_model_config) if isinstance(raw_model_config, dict) else None
+    raw_extra_headers = raw.get("extra_headers")
+    extra_headers: dict[str, str] | None = None
+    if isinstance(raw_extra_headers, dict):
+        extra_headers = {str(k): str(v) for k, v in raw_extra_headers.items()}
 
     active_provider = raw.get("active_provider")
     raw_providers = raw.get("providers")
@@ -467,6 +482,7 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
         default_agent=str(default_agent) if default_agent is not None else None,
         enable_queue=bool(enable_queue) if enable_queue is not None else None,
         max_queue_size=int(str(max_queue_size)) if max_queue_size is not None else None,
+        extra_headers=extra_headers,
     )
     return _apply_active_provider(chat)
 
@@ -749,6 +765,8 @@ def _encode_chat_provider(p: ChatProviderConfig) -> dict:
     model_config_dict = _encode_model_config(p.model_config)
     if model_config_dict:
         out["model_config"] = model_config_dict
+    if p.extra_headers:
+        out["extra_headers"] = dict(p.extra_headers)
     return out
 
 
@@ -776,6 +794,8 @@ def _encode_chat(c: ChatConfig | None) -> dict | None:
         out["active_provider"] = c.active_provider
     if c.providers:
         out["providers"] = {name: _encode_chat_provider(provider) for name, provider in c.providers.items()}
+    if c.extra_headers:
+        out["extra_headers"] = dict(c.extra_headers)
     if c.tool_loop_limit is not None:
         out["tool_loop_limit"] = int(c.tool_loop_limit)
     if c.bash_tool_limit is not None:

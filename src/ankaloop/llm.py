@@ -435,10 +435,13 @@ class AnyLLMClient(BaseLLMClient):
         api_key: str | None,
         model: str,
         model_config: ModelConfig | None = None,
+        extra_headers: dict[str, str] | None = None,
     ):
         from any_llm import AnyLLM
 
-        client_options = {"max_retries": 0} if provider in {"anthropic", "gmi", "openai"} else {}
+        client_options: dict[str, Any] = {"max_retries": 0} if provider in {"anthropic", "gmi", "openai"} else {}
+        if extra_headers:
+            client_options["default_headers"] = dict(extra_headers)
         self.client = AnyLLM.create(
             provider,
             api_key=api_key,
@@ -739,8 +742,9 @@ class OpenAIClient(AnyLLMClient):
         api_key: str | None,
         model: str,
         model_config: ModelConfig | None = None,
+        extra_headers: dict[str, str] | None = None,
     ):
-        super().__init__("openai", base_url, api_key, model, model_config)
+        super().__init__("openai", base_url, api_key, model, model_config, extra_headers)
 
 
 class AnthropicClient(AnyLLMClient):
@@ -752,8 +756,9 @@ class AnthropicClient(AnyLLMClient):
         model: str,
         base_url: str | None = None,
         model_config: ModelConfig | None = None,
+        extra_headers: dict[str, str] | None = None,
     ):
-        super().__init__("anthropic", base_url, api_key, model, model_config)
+        super().__init__("anthropic", base_url, api_key, model, model_config, extra_headers)
 
 
 class OpenAIResponsesClient(BaseLLMClient):
@@ -765,14 +770,18 @@ class OpenAIResponsesClient(BaseLLMClient):
         api_key: str | None,
         model: str,
         model_config: ModelConfig | None = None,
+        extra_headers: dict[str, str] | None = None,
     ):
         from any_llm import AnyLLM
 
+        client_options: dict[str, Any] = {"max_retries": 0}
+        if extra_headers:
+            client_options["default_headers"] = dict(extra_headers)
         self.client = AnyLLM.create(
             "openai",
             api_key=api_key,
             api_base=base_url,
-            max_retries=0,
+            **client_options,
         )
         self.model = model
         self._configure_request_limits(model_config=model_config, provider_id="openai")
@@ -952,6 +961,35 @@ class OpenAIResponsesClient(BaseLLMClient):
         )
 
 
+def _build_request_headers(
+    *,
+    base_url: str | None,
+    api_type: str | None,
+    extra_headers: dict[str, str] | None,
+) -> dict[str, str] | None:
+    """Combine configured headers with automatic OpenRouter app attribution.
+
+    OpenRouter associates API usage with an app via the HTTP-Referer /
+    X-OpenRouter-Title headers (see https://openrouter.ai/docs/app-attribution).
+    When the target is an OpenRouter endpoint, inject defaults so AnkaLoop
+    usage is attributed to the project; explicit user headers always win.
+    """
+    headers: dict[str, str] = dict(extra_headers) if extra_headers else {}
+    is_openrouter = bool(base_url and "openrouter.ai" in base_url) or api_type == "openrouter"
+    if is_openrouter:
+        headers.setdefault(
+            "HTTP-Referer",
+            os.environ.get("ANKA_APP_URL", "https://github.com/tao12345666333/ankaloop"),
+        )
+        headers.setdefault("X-OpenRouter-Title", os.environ.get("ANKA_APP_NAME", "AnkaLoop"))
+        categories = os.environ.get("ANKA_APP_CATEGORIES")
+        if categories is None:
+            headers.setdefault("X-OpenRouter-Categories", "personal-agent,cli-agent")
+        elif categories:
+            headers.setdefault("X-OpenRouter-Categories", categories)
+    return headers or None
+
+
 def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
     """Create an any-llm client based on config.
 
@@ -975,6 +1013,11 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
             api_key=api_key,
             model=model,
             model_config=model_config,
+            extra_headers=_build_request_headers(
+                base_url=responses_base_url,
+                api_type=api_type,
+                extra_headers=cfg.extra_headers if cfg else None,
+            ),
         )
 
     base_url: str | None = cfg.base_url if cfg else None
@@ -993,6 +1036,11 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
             api_key=api_key,
             model=model,
             model_config=model_config,
+            extra_headers=_build_request_headers(
+                base_url=base_url,
+                api_type=api_type,
+                extra_headers=cfg.extra_headers if cfg else None,
+            ),
         )
     if api_type == "anthropic":
         return AnthropicClient(
@@ -1000,6 +1048,11 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
             api_key=api_key,
             model=model,
             model_config=model_config,
+            extra_headers=_build_request_headers(
+                base_url=base_url,
+                api_type=api_type,
+                extra_headers=cfg.extra_headers if cfg else None,
+            ),
         )
     return AnyLLMClient(
         provider=api_type,
@@ -1007,4 +1060,9 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
         api_key=api_key,
         model=model,
         model_config=model_config,
+        extra_headers=_build_request_headers(
+            base_url=base_url,
+            api_type=api_type,
+            extra_headers=cfg.extra_headers if cfg else None,
+        ),
     )

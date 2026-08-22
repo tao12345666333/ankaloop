@@ -345,3 +345,44 @@ def test_decode_telegram_invalid_policy_falls_back_to_defaults():
     assert cfg.group_policy == "mention"
     assert cfg.typing_interval_seconds == 1
     assert cfg.max_queue_size == 1
+
+
+def test_decode_encode_provider_extra_headers_roundtrip():
+    raw = {
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "test-model",
+        "api_type": "openai",
+        "extra_headers": {
+            "HTTP-Referer": "https://myapp.example",
+            "X-OpenRouter-Title": "My App",
+        },
+    }
+    provider = config_module._decode_chat_provider(raw)
+    assert provider.extra_headers == {
+        "HTTP-Referer": "https://myapp.example",
+        "X-OpenRouter-Title": "My App",
+    }
+    encoded = config_module._encode_chat_provider(provider)
+    assert encoded["extra_headers"] == raw["extra_headers"]
+
+
+def test_active_provider_applies_extra_headers():
+    raw = {
+        "active_provider": "openrouter",
+        "providers": {
+            "openrouter": {
+                "base_url": "https://openrouter.ai/api/v1",
+                "model": "test-model",
+                "api_type": "openai",
+                "extra_headers": {"X-Custom": "yes"},
+            },
+            "other": {
+                "base_url": "https://other.example/v1",
+                "model": "other-model",
+                "api_type": "openai",
+            },
+        },
+    }
+    chat = config_module._decode_chat(raw)
+    assert chat is not None
+    assert chat.extra_headers == {"X-Custom": "yes"}
