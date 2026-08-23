@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 MEMORY_REVIEW_TURN_INTERVAL = 10
 
 
+class TurnDeadlineExceededError(RuntimeError):
+    """A turn exceeded its wall-clock deadline and was cancelled."""
+
+
 class TurnService:
     """Own draft execution, commit/rollback, and best-effort projections."""
 
@@ -30,6 +34,45 @@ class TurnService:
         self._agent = agent
 
     async def process_message(self, user_input: str, work_dir: Path | None, stream: bool, show_progress: bool) -> str:
+        """Process a single message under a wall-clock deadline.
+
+        The deadline is a backstop for hangs that per-request LLM timeouts
+        cannot reach (an agent stuck outside the guarded call path, e.g. on
+        a silently-dead network connection). On expiry the turn is cancelled
+        (session state is rolled back by the cancellation handler) and
+        ``TurnDeadlineExceededError`` is raised.
+        """
+        deadline = self._turn_deadline_seconds()
+        if deadline and deadline > 0:
+            try:
+                return await asyncio.wait_for(
+                    self._process_message_inner(user_input, work_dir, stream, show_progress),
+                    timeout=deadline,
+                )
+            except TimeoutError:
+                self._agent._emit_event(
+                    "turn.deadline_exceeded",
+                    {"deadline_seconds": deadline, "user_input_preview": user_input[:120]},
+                )
+                raise TurnDeadlineExceededError(
+                    f"Turn exceeded the {deadline:.0f}s wall-clock deadline and was cancelled."
+                ) from None
+        return await self._process_message_inner(user_input, work_dir, stream, show_progress)
+
+    def _turn_deadline_seconds(self) -> float:
+        try:
+            cfg = self._agent._resolve_turn_config()
+        except Exception:
+            cfg = None
+        chat = cfg.chat if cfg is not None and cfg.chat is not None else ChatConfig()
+        try:
+            return max(0.0, float(chat.turn_deadline_seconds))
+        except (TypeError, ValueError, AttributeError):
+            return ChatConfig().turn_deadline_seconds
+
+    async def _process_message_inner(
+        self, user_input: str, work_dir: Path | None, stream: bool, show_progress: bool
+    ) -> str:
         """
         Process a single message (internal implementation).
 

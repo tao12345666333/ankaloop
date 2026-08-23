@@ -90,6 +90,10 @@ class ChatConfig:
     request_timeout_seconds: float = 120.0
     max_retries: int = 2
     retry_base_delay_seconds: float = 0.5
+    # Wall-clock ceiling for a whole turn (all LLM calls + tool executions).
+    # Backstop for hangs that per-request timeouts cannot reach (e.g. an
+    # agent stuck outside the guarded LLM call path). 0 or negative disables.
+    turn_deadline_seconds: float = 900.0
 
     # Named provider profiles. ``active_provider`` selects which profile is copied
     # into the top-level chat fields at load time so existing call sites keep working.
@@ -427,6 +431,7 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
     api_key = raw.get("api_key")
     api_type = raw.get("api_type")
     request_timeout_seconds = raw.get("request_timeout_seconds", 120.0)
+    turn_deadline_raw = raw.get("turn_deadline_seconds", 900.0)
     max_retries = raw.get("max_retries", 2)
     retry_base_delay_seconds = raw.get("retry_base_delay_seconds", 0.5)
     tool_loop_limit = raw.get("tool_loop_limit")
@@ -466,6 +471,7 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
         api_type=str(api_type) if api_type is not None else None,
         model_config=model_config,
         request_timeout_seconds=float(str(request_timeout_seconds)),
+        turn_deadline_seconds=float(str(turn_deadline_raw)),
         max_retries=int(str(max_retries)),
         retry_base_delay_seconds=float(str(retry_base_delay_seconds)),
         active_provider=str(active_provider) if active_provider is not None else None,
@@ -813,6 +819,8 @@ def _encode_chat(c: ChatConfig | None) -> dict | None:
     if c.edit_tool_enabled is not None:
         out["edit_tool_enabled"] = bool(c.edit_tool_enabled)
     out["sync_tool_settle_timeout_seconds"] = float(c.sync_tool_settle_timeout_seconds)
+    if c.turn_deadline_seconds != 900.0:
+        out["turn_deadline_seconds"] = float(c.turn_deadline_seconds)
     # Agent settings
     if c.default_agent:
         out["default_agent"] = c.default_agent
