@@ -515,12 +515,19 @@ class PatchApplier:
                     raise PatchApplyError(
                         f"Hunk #{hunk_number} in {file_path}: context line past end of file: {hunk_line.text!r}"
                     )
-                # Context lines locate the hunk; their exact content is trusted
-                # from the file (historical behaviour). A typo in a context line
-                # is not what corrupts a file, and strict context comparison
-                # would reject patches whose indentation merely differs by the
-                # parser's stripped prefix char. Deletion lines below are the
-                # ones that must verify exactly -- a wrong deletion = corruption.
+                # Context lines participate in verification (mirroring Codex's
+                # old_lines block match): a typo in a context line must be
+                # rejected. Whitespace-only differences are tolerated (trim), so
+                # the parser's stripped-prefix char and incidental indentation
+                # drift do not cause false rejections. Deletion lines below
+                # verify exactly -- a wrong deletion = corruption.
+                actual = lines[pos].rstrip("\r\n").strip()
+                expected = hunk_line.text.rstrip("\r\n").strip()
+                if actual != expected:
+                    raise PatchApplyError(
+                        f"Hunk #{hunk_number} in {file_path}: context mismatch at line {pos + 1}: "
+                        f"expected {expected!r}, found {actual!r}"
+                    )
                 new_lines.append(lines[pos])
                 i += 1
             elif hunk_line.is_deletion:

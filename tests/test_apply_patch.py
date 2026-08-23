@@ -473,17 +473,18 @@ class TestStrictHunkVerification:
 
         assert file_path.read_text(encoding="utf-8") == original
 
-    def test_misleading_context_still_applies_deletion(self, tmp_path):
-        """A drifted context line is trusted from the file; the deletion is
-        what must align. This mirrors the historical behaviour where context
-        content is not strictly verified, but a wrong *deletion* is rejected.
+    def test_context_mismatch_rejected(self, tmp_path):
+        """A context line whose content does not exist in the file is rejected.
+
+        Mirrors Codex's old_lines block match: context participates in
+        verification (whitespace-only drift is tolerated, but a wrong token is
+        not).
         """
         file_path = tmp_path / "m.py"
         original = "class A:\n    x = 1\n    y = 2\n"
         file_path.write_text(original, encoding="utf-8")
 
-        # Context says "    z = 3" (does not exist) but the deletion line
-        # "    y = 2" is correct, so the hunk still applies correctly.
+        # Context says "    z = 3" which does not exist in the file.
         patch_text = (
             "*** Begin Patch\n"
             "*** Update File: m.py\n"
@@ -495,8 +496,10 @@ class TestStrictHunkVerification:
             "*** End Patch"
         )
 
-        apply_patch_text(patch_text, tmp_path)
-        assert file_path.read_text(encoding="utf-8") == "class A:\n    x = 1\n    y = 20\n"
+        with pytest.raises(PatchApplyError):
+            apply_patch_text(patch_text, tmp_path)
+
+        assert file_path.read_text(encoding="utf-8") == original
 
     def test_additions_only_anchor_not_found_rejected(self, tmp_path):
         """Additions-only hunk with a missing anchor must raise, not append."""
