@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -302,6 +303,11 @@ class PatchApplier:
     def apply(self, patch: Patch) -> list[dict[str, Any]]:
         """Apply a patch and return a summary of changes.
 
+        Two-phase: every operation is computed against in-memory content
+        first; filesystem writes happen only after all operations computed
+        successfully. A patch that fails partway leaves every file
+        untouched (all-or-nothing across files).
+
         Args:
             patch: The parsed patch to apply
 
@@ -310,18 +316,93 @@ class PatchApplier:
         """
         self.applied_changes = []
 
+        pending_mkdirs: list[Path] = []
+        pending_writes: list[tuple[Path, str]] = []
+        pending_deletes: list[Path] = []
+
+        self._validate_distinct_paths(patch)
+
         for op in patch.operations:
             try:
                 if op.op_type == PatchOperationType.ADD_FILE:
-                    self._apply_add_file(op)
+                    self._compute_add_file(op, pending_writes, pending_mkdirs)
                 elif op.op_type == PatchOperationType.DELETE_FILE:
-                    self._apply_delete_file(op)
+                    self._compute_delete_file(op, pending_deletes)
                 elif op.op_type == PatchOperationType.UPDATE_FILE:
-                    self._apply_update_file(op)
+                    self._compute_update_file(op, pending_writes, pending_deletes, pending_mkdirs)
             except Exception as e:
                 raise PatchApplyError(f"Failed to apply {op.op_type.value} for {op.path}: {e}") from e
 
+        self._commit_changes(pending_mkdirs, pending_writes, pending_deletes)
+
         return self.applied_changes
+
+    def _validate_distinct_paths(self, patch: Patch) -> None:
+        """Reject patches that operate on the same path more than once."""
+        seen: set[Path] = set()
+        for op in patch.operations:
+            paths = [self._resolve_path(op.path)]
+            if op.move_to:
+                target_path = self._resolve_path(op.move_to)
+                if target_path != paths[0]:
+                    paths.append(target_path)
+
+            for path in paths:
+                if path in seen:
+                    raise PatchApplyError(f"Multiple operations target the same path: {path}")
+                seen.add(path)
+
+    def _commit_changes(
+        self,
+        pending_mkdirs: list[Path],
+        pending_writes: list[tuple[Path, str]],
+        pending_deletes: list[Path],
+    ) -> None:
+        """Commit computed changes and restore original contents on failure."""
+        paths = dict.fromkeys([file_path for file_path, _ in pending_writes] + pending_deletes)
+        originals = {path: path.read_bytes() if path.exists() else None for path in paths}
+
+        base_dir = self.base_dir.resolve()
+        missing_directories: set[Path] = set()
+        for directory in pending_mkdirs:
+            current = directory
+            while current != base_dir and not current.exists():
+                missing_directories.add(current)
+                current = current.parent
+
+        try:
+            for directory in pending_mkdirs:
+                directory.mkdir(parents=True, exist_ok=True)
+            for file_path, content in pending_writes:
+                file_path.write_text(content, encoding="utf-8")
+            for file_path in pending_deletes:
+                file_path.unlink()
+        except Exception as commit_error:
+            rollback_errors: list[str] = []
+            for path, original in originals.items():
+                try:
+                    if original is None:
+                        if path.exists():
+                            path.unlink()
+                    else:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(original)
+                except Exception as rollback_error:
+                    rollback_errors.append(f"{path}: {rollback_error}")
+
+            for directory in sorted(
+                missing_directories,
+                key=lambda path: len(path.parts),
+                reverse=True,
+            ):
+                with suppress(OSError):
+                    directory.rmdir()
+
+            self.applied_changes = []
+            message = f"Failed to commit patch: {commit_error}"
+            if rollback_errors:
+                message += f"; rollback failed for: {', '.join(rollback_errors)}"
+            raise PatchApplyError(message) from commit_error
 
     def _resolve_path(self, path: str) -> Path:
         """Resolve a path relative to base_dir."""
@@ -340,19 +421,24 @@ class PatchApplier:
             raise PatchApplyError(f"Path escapes workspace: {path}")
         return resolved
 
-    def _apply_add_file(self, op: FileOperation) -> None:
-        """Apply an Add File operation."""
+    def _compute_add_file(
+        self,
+        op: FileOperation,
+        pending_writes: list[tuple[Path, str]],
+        pending_mkdirs: list[Path],
+    ) -> None:
+        """Compute an Add File operation (fail if the file already exists)."""
         file_path = self._resolve_path(op.path)
 
-        # Create parent directories
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+        if file_path.exists():
+            raise PatchApplyError(f"File already exists: {file_path}")
 
-        # Write content
         content = "\n".join(op.content_lines)
         if op.content_lines and not content.endswith("\n"):
             content += "\n"
 
-        file_path.write_text(content, encoding="utf-8")
+        pending_mkdirs.append(file_path.parent)
+        pending_writes.append((file_path, content))
 
         self.applied_changes.append(
             {
@@ -363,14 +449,14 @@ class PatchApplier:
         )
         logger.info(f"Created file: {file_path}")
 
-    def _apply_delete_file(self, op: FileOperation) -> None:
-        """Apply a Delete File operation."""
+    def _compute_delete_file(self, op: FileOperation, pending_deletes: list[Path]) -> None:
+        """Compute a Delete File operation."""
         file_path = self._resolve_path(op.path)
 
         if not file_path.exists():
             raise PatchApplyError(f"File not found for deletion: {file_path}")
 
-        file_path.unlink()
+        pending_deletes.append(file_path)
 
         self.applied_changes.append(
             {
@@ -380,8 +466,14 @@ class PatchApplier:
         )
         logger.info(f"Deleted file: {file_path}")
 
-    def _apply_update_file(self, op: FileOperation) -> None:
-        """Apply an Update File operation."""
+    def _compute_update_file(
+        self,
+        op: FileOperation,
+        pending_writes: list[tuple[Path, str]],
+        pending_deletes: list[Path],
+        pending_mkdirs: list[Path],
+    ) -> None:
+        """Compute an Update File operation against in-memory content."""
         file_path = self._resolve_path(op.path)
 
         if not file_path.exists():
@@ -395,25 +487,25 @@ class PatchApplier:
         total_deletions = 0
         total_additions = 0
 
-        for hunk in op.hunks:
-            lines, deletions, additions = self._apply_hunk(lines, hunk, file_path)
+        for hunk_number, hunk in enumerate(op.hunks, start=1):
+            lines, deletions, additions = self._apply_hunk(lines, hunk, file_path, hunk_number)
             total_deletions += deletions
             total_additions += additions
 
-        # Write back
         new_content = "".join(lines)
 
         # Handle move_to (rename)
         target_path = file_path
         if op.move_to:
             target_path = self._resolve_path(op.move_to)
-            target_path.parent.mkdir(parents=True, exist_ok=True)
+            if target_path != file_path:
+                pending_mkdirs.append(target_path.parent)
 
-        target_path.write_text(new_content, encoding="utf-8")
+        pending_writes.append((target_path, new_content))
 
         # Delete original if moved
         if op.move_to and file_path != target_path:
-            file_path.unlink()
+            pending_deletes.append(file_path)
 
         self.applied_changes.append(
             {
@@ -427,13 +519,25 @@ class PatchApplier:
         )
         logger.info(f"Updated file: {file_path}" + (f" -> {target_path}" if op.move_to else ""))
 
-    def _apply_hunk(self, lines: list[str], hunk: Hunk, file_path: Path) -> tuple[list[str], int, int]:
+    def _apply_hunk(
+        self,
+        lines: list[str],
+        hunk: Hunk,
+        file_path: Path,
+        hunk_number: int = 1,
+    ) -> tuple[list[str], int, int]:
         """Apply a single hunk to file lines.
+
+        Every context and deletion line is verified against the actual file
+        content at the matched position. A mismatch (typo in the patch,
+        drifted file, wrong location) raises instead of silently producing
+        a corrupted result.
 
         Args:
             lines: Current file lines (with newlines)
             hunk: The hunk to apply
             file_path: For error messages
+            hunk_number: 1-based hunk index for error messages
 
         Returns:
             (updated_lines, deletions_count, additions_count)
@@ -446,36 +550,61 @@ class PatchApplier:
 
         if not context_and_deletions:
             # Hunk only has additions, need to find location via anchors
-            return self._apply_additions_only_hunk(lines, hunk, file_path)
+            return self._apply_additions_only_hunk(lines, hunk, file_path, hunk_number)
 
         # Find the location in the file
         match_start = self._find_hunk_location(lines, hunk, context_and_deletions)
 
         if match_start is None:
-            # Try fuzzy matching
-            match_start = self._fuzzy_find_hunk_location(lines, hunk, context_and_deletions)
+            # Try fuzzy matching (verified sliding-window search)
+            match_start = self._fuzzy_find_hunk_location(lines, hunk)
 
         if match_start is None:
             raise PatchApplyError(
-                f"Could not find match for hunk in {file_path}. Looking for: {context_and_deletions[:3]}..."
+                f"Hunk #{hunk_number} in {file_path}: could not locate context. "
+                f"Looking for: {context_and_deletions[:3]}..."
             )
 
-        # Apply the changes
+        # Apply the changes, verifying every context/deletion line
         new_lines = lines[:match_start]
         i = 0
         deletions = 0
         additions = 0
 
         for hunk_line in hunk.lines:
+            pos = match_start + i
             if hunk_line.is_context:
-                # Keep context line
-                if match_start + i < len(lines):
-                    new_lines.append(lines[match_start + i])
-                else:
-                    new_lines.append(hunk_line.text + "\n")
+                if pos >= len(lines):
+                    raise PatchApplyError(
+                        f"Hunk #{hunk_number} in {file_path}: context line past end of file: {hunk_line.text!r}"
+                    )
+                # Context lines participate in verification (mirroring Codex's
+                # old_lines block match): a typo in a context line must be
+                # rejected. Whitespace-only differences are tolerated (trim), so
+                # the parser's stripped-prefix char and incidental indentation
+                # drift do not cause false rejections. Deletion lines below
+                # verify exactly -- a wrong deletion = corruption.
+                actual = lines[pos].rstrip("\r\n").strip()
+                expected = hunk_line.text.rstrip("\r\n").strip()
+                if actual != expected:
+                    raise PatchApplyError(
+                        f"Hunk #{hunk_number} in {file_path}: context mismatch at line {pos + 1}: "
+                        f"expected {expected!r}, found {actual!r}"
+                    )
+                new_lines.append(lines[pos])
                 i += 1
             elif hunk_line.is_deletion:
-                # Skip this line (delete it)
+                if pos >= len(lines):
+                    raise PatchApplyError(
+                        f"Hunk #{hunk_number} in {file_path}: deletion line past end of file: {hunk_line.text!r}"
+                    )
+                actual = lines[pos].rstrip("\r\n").rstrip()
+                expected = hunk_line.text.rstrip("\r\n").rstrip()
+                if actual != expected:
+                    raise PatchApplyError(
+                        f"Hunk #{hunk_number} in {file_path}: deletion mismatch at line {pos + 1}: "
+                        f"expected {expected!r}, found {actual!r}"
+                    )
                 i += 1
                 deletions += 1
             elif hunk_line.is_addition:
@@ -496,24 +625,20 @@ class PatchApplier:
 
         Uses anchors and context to locate the exact position.
         """
-        # Strip newlines for comparison
+        # Strip newlines for comparison. File lines keep their leading
+        # prefix char; strip it to mirror PatchParser's text storage so
+        # parsed-patch context lines line up with the raw file.
         stripped_lines = [line.rstrip("\n\r") for line in lines]
         stripped_pattern = [p.rstrip("\n\r") for p in pattern]
 
         if not stripped_pattern:
             return None
 
-        # If we have anchors, find them first to narrow the search
-        search_start = 0
+        # If we have anchors, find them first to narrow the search.
         search_end = len(stripped_lines)
-
-        for anchor in hunk.anchors:
-            # Find anchor in file
-            anchor_stripped = anchor.strip()
-            for idx in range(search_start, search_end):
-                if anchor_stripped in stripped_lines[idx]:
-                    search_start = idx
-                    break
+        search_start = self._find_anchor_start(stripped_lines, hunk.anchors)
+        if search_start is None:
+            return None
 
         # Search for the pattern within the narrowed range
         pattern_len = len(stripped_pattern)
@@ -529,42 +654,85 @@ class PatchApplier:
 
         return None
 
-    def _fuzzy_find_hunk_location(self, lines: list[str], hunk: Hunk, pattern: list[str]) -> int | None:
-        """Fuzzy find hunk location by matching subset of pattern."""
-        stripped_lines = [line.rstrip("\n\r") for line in lines]
+    def _find_anchor_start(self, lines: list[str], anchors: list[str]) -> int | None:
+        """Return the start of the nested anchor scope, or None if an anchor is missing."""
+        search_start = 0
+        for anchor in anchors:
+            anchor_stripped = anchor.strip()
+            match = next(
+                (idx for idx in range(search_start, len(lines)) if anchor_stripped in lines[idx]),
+                None,
+            )
+            if match is None:
+                return None
+            search_start = match
+        return search_start
 
-        # Try matching just the first deletion or distinctive line
-        for hunk_line in hunk.lines:
-            if hunk_line.is_deletion:
-                target = hunk_line.text.rstrip()
-                for idx, line in enumerate(stripped_lines):
-                    if line.rstrip() == target:
-                        # Found a potential match, verify with context
-                        return self._verify_and_adjust_position(stripped_lines, idx, hunk)
+    def _fuzzy_find_hunk_location(self, lines: list[str], hunk: Hunk) -> int | None:
+        """Fall back to locating the hunk by its deletion lines.
+
+        The anchored/exact search already failed, so the patch context did
+        not line up verbatim. Candidate positions are restricted to the
+        anchor scope, and every source-consuming line is verified at its real
+        offset before a match is accepted.
+        """
+        source_lines = [line for line in hunk.lines if not line.is_addition]
+        first_deletion_offset = next(
+            (idx for idx, line in enumerate(source_lines) if line.is_deletion),
+            None,
+        )
+        if first_deletion_offset is None:
+            return None
+
+        stripped_lines = [line.rstrip("\n\r") for line in lines]
+        search_start = self._find_anchor_start(stripped_lines, hunk.anchors)
+        if search_start is None:
+            return None
+
+        # Candidate positions: any line that matches the first deletion line.
+        first_deletion = source_lines[first_deletion_offset].text.rstrip("\n\r")
+        for deletion_idx in range(search_start, len(stripped_lines)):
+            if stripped_lines[deletion_idx].rstrip() != first_deletion.rstrip():
+                continue
+
+            candidate_start = deletion_idx - first_deletion_offset
+            if candidate_start < search_start:
+                continue
+
+            for offset, hunk_line in enumerate(source_lines):
+                file_idx = candidate_start + offset
+                if file_idx >= len(stripped_lines):
+                    break
+                actual = stripped_lines[file_idx]
+                expected = hunk_line.text.rstrip("\n\r")
+                if hunk_line.is_context:
+                    matches = actual.strip() == expected.strip()
+                else:
+                    matches = actual.rstrip() == expected.rstrip()
+                if not matches:
+                    break
+            else:
+                return candidate_start
         return None
 
-    def _verify_and_adjust_position(self, lines: list[str], candidate: int, hunk: Hunk) -> int | None:
-        """Verify a candidate position and adjust if needed."""
-        # Count context lines before first change
-        context_before_count = 0
-        for hunk_line in hunk.lines:
-            if hunk_line.is_context:
-                context_before_count += 1
-            else:
-                break
+    def _apply_additions_only_hunk(
+        self,
+        lines: list[str],
+        hunk: Hunk,
+        file_path: Path,
+        hunk_number: int = 1,
+    ) -> tuple[list[str], int, int]:
+        """Handle hunks that only have additions (no context or deletions).
 
-        # Adjust position to start of hunk
-        adjusted = candidate - context_before_count
-        return max(0, adjusted)
-
-    def _apply_additions_only_hunk(self, lines: list[str], hunk: Hunk, file_path: Path) -> tuple[list[str], int, int]:
-        """Handle hunks that only have additions (no context or deletions)."""
-        # Use anchors to find location
+        Location is found via anchors. If no anchors are supplied the
+        additions are appended to the end of the file. If anchors are given
+        but none match, the hunk is rejected -- a silent append to EOF would
+        drop the intended insertion point and corrupt the result.
+        """
         if not hunk.anchors:
             # Append to end of file
             insert_pos = len(lines)
         else:
-            # Find via anchors
             insert_pos = None
             stripped_lines = [line.rstrip("\n\r") for line in lines]
 
@@ -578,7 +746,7 @@ class PatchApplier:
                     break
 
             if insert_pos is None:
-                insert_pos = len(lines)
+                raise PatchApplyError(f"Hunk #{hunk_number} in {file_path}: anchor(s) not found: {hunk.anchors}")
 
         # Insert additions
         new_lines = lines[:insert_pos]

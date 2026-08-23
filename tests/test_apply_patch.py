@@ -442,3 +442,169 @@ class TestApplyPatchText:
         # Other methods unchanged
         assert "return a + b" in content  # add method
         assert "return a * b" in content
+
+
+class TestStrictHunkVerification:
+    """Regression tests for the silent-corruption incident.
+
+    A patch whose context/deletion lines do not match the actual file
+    content (e.g. a typo) must be rejected, not silently applied into a
+    corrupted file. File content is left untouched on failure.
+    """
+
+    def test_typo_in_deletion_line_rejected(self, tmp_path):
+        """Case #1 from INCIDENT-REPORT: typo patch rejected, file intact."""
+        file_path = tmp_path / "sample.py"
+        original = 'def hello():\n    print("hello world")\n    return 0\n'
+        file_path.write_text(original, encoding="utf-8")
+
+        typo_patch = (
+            "*** Begin Patch\n"
+            "*** Update File: sample.py\n"
+            "@@ def hello():\n"
+            '    print("hello world")\n'
+            "-    retunr 0\n"
+            "+    return 42\n"
+            "*** End Patch"
+        )
+
+        with pytest.raises(PatchApplyError):
+            apply_patch_text(typo_patch, tmp_path)
+
+        assert file_path.read_text(encoding="utf-8") == original
+
+    def test_context_mismatch_rejected(self, tmp_path):
+        """A context line whose content does not exist in the file is rejected.
+
+        Mirrors Codex's old_lines block match: context participates in
+        verification (whitespace-only drift is tolerated, but a wrong token is
+        not).
+        """
+        file_path = tmp_path / "m.py"
+        original = "class A:\n    x = 1\n    y = 2\n"
+        file_path.write_text(original, encoding="utf-8")
+
+        # Context says "    z = 3" which does not exist in the file.
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: m.py\n"
+            "@@ class A:\n"
+            "    x = 1\n"
+            "    z = 3\n"
+            "-    y = 2\n"
+            "+    y = 20\n"
+            "*** End Patch"
+        )
+
+        with pytest.raises(PatchApplyError):
+            apply_patch_text(patch_text, tmp_path)
+
+        assert file_path.read_text(encoding="utf-8") == original
+
+    def test_additions_only_anchor_not_found_rejected(self, tmp_path):
+        """Additions-only hunk with a missing anchor must raise, not append."""
+        file_path = tmp_path / "m.py"
+        original = "class A:\n    pass\n"
+        file_path.write_text(original, encoding="utf-8")
+
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: m.py\n"
+            "@@ class A:\n"
+            "    anchors: [NonExistentMarker]\n"
+            "+    new_field = 1\n"
+            "*** End Patch"
+        )
+
+        with pytest.raises(PatchApplyError):
+            apply_patch_text(patch_text, tmp_path)
+
+        assert file_path.read_text(encoding="utf-8") == original
+
+    def test_fuzzy_match_stays_within_anchor_scope(self, tmp_path):
+        """A fuzzy match must not modify an earlier lookalike block."""
+        file_path = tmp_path / "m.py"
+        file_path.write_text(
+            "class First:\n    marker\n    target\n\nclass Second:\n  marker\n    target\n",
+            encoding="utf-8",
+        )
+
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: m.py\n"
+            "@@ class Second\n"
+            "     marker\n"
+            "-    target\n"
+            "+    changed\n"
+            "*** End Patch"
+        )
+
+        apply_patch_text(patch_text, tmp_path)
+
+        assert file_path.read_text(encoding="utf-8") == (
+            "class First:\n    marker\n    target\n\nclass Second:\n  marker\n    changed\n"
+        )
+
+    def test_fuzzy_match_accounts_for_context_between_deletions(self, tmp_path):
+        """Deletion offsets include intervening context lines."""
+        file_path = tmp_path / "m.py"
+        file_path.write_text(
+            "  before\nold1\n  middle\nold2\nafter\n",
+            encoding="utf-8",
+        )
+
+        patch_text = (
+            "*** Begin Patch\n*** Update File: m.py\n@@\n before\n-old1\n middle\n-old2\n+new\n after\n*** End Patch"
+        )
+
+        apply_patch_text(patch_text, tmp_path)
+
+        assert file_path.read_text(encoding="utf-8") == "  before\n  middle\nnew\nafter\n"
+
+    def test_repeated_path_is_rejected_before_any_changes(self, tmp_path):
+        """Separate operations may not compute from stale content for one path."""
+        file_path = tmp_path / "m.py"
+        original = "a\nb\n"
+        file_path.write_text(original, encoding="utf-8")
+
+        patch_text = (
+            "*** Begin Patch\n*** Update File: m.py\n@@\n-a\n+A\n*** Update File: m.py\n@@\n-b\n+B\n*** End Patch"
+        )
+
+        with pytest.raises(PatchApplyError, match="Multiple operations target the same path"):
+            apply_patch_text(patch_text, tmp_path)
+
+        assert file_path.read_text(encoding="utf-8") == original
+
+    def test_commit_failure_rolls_back_prior_writes(self, tmp_path, monkeypatch):
+        """A later filesystem failure restores files written earlier."""
+        first = tmp_path / "first.py"
+        second = tmp_path / "second.py"
+        first.write_text("old first\n", encoding="utf-8")
+        second.write_text("old second\n", encoding="utf-8")
+        original_write_text = Path.write_text
+
+        def fail_second_write(path, content, *args, **kwargs):
+            if path == second:
+                raise OSError("simulated write failure")
+            return original_write_text(path, content, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", fail_second_write)
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: first.py\n"
+            "@@\n"
+            "-old first\n"
+            "+new first\n"
+            "*** Update File: second.py\n"
+            "@@\n"
+            "-old second\n"
+            "+new second\n"
+            "*** End Patch"
+        )
+
+        with pytest.raises(PatchApplyError, match="Failed to commit patch"):
+            apply_patch_text(patch_text, tmp_path)
+
+        assert first.read_text(encoding="utf-8") == "old first\n"
+        assert second.read_text(encoding="utf-8") == "old second\n"
