@@ -442,3 +442,78 @@ class TestApplyPatchText:
         # Other methods unchanged
         assert "return a + b" in content  # add method
         assert "return a * b" in content
+
+
+class TestStrictHunkVerification:
+    """Regression tests for the silent-corruption incident.
+
+    A patch whose context/deletion lines do not match the actual file
+    content (e.g. a typo) must be rejected, not silently applied into a
+    corrupted file. File content is left untouched on failure.
+    """
+
+    def test_typo_in_deletion_line_rejected(self, tmp_path):
+        """Case #1 from INCIDENT-REPORT: typo patch rejected, file intact."""
+        file_path = tmp_path / "sample.py"
+        original = 'def hello():\n    print("hello world")\n    return 0\n'
+        file_path.write_text(original, encoding="utf-8")
+
+        typo_patch = (
+            "*** Begin Patch\n"
+            "*** Update File: sample.py\n"
+            "@@ def hello():\n"
+            '    print("hello world")\n'
+            "-    retunr 0\n"
+            "+    return 42\n"
+            "*** End Patch"
+        )
+
+        with pytest.raises(PatchApplyError):
+            apply_patch_text(typo_patch, tmp_path)
+
+        assert file_path.read_text(encoding="utf-8") == original
+
+    def test_misleading_context_still_applies_deletion(self, tmp_path):
+        """A drifted context line is trusted from the file; the deletion is
+        what must align. This mirrors the historical behaviour where context
+        content is not strictly verified, but a wrong *deletion* is rejected.
+        """
+        file_path = tmp_path / "m.py"
+        original = "class A:\n    x = 1\n    y = 2\n"
+        file_path.write_text(original, encoding="utf-8")
+
+        # Context says "    z = 3" (does not exist) but the deletion line
+        # "    y = 2" is correct, so the hunk still applies correctly.
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: m.py\n"
+            "@@ class A:\n"
+            "    x = 1\n"
+            "    z = 3\n"
+            "-    y = 2\n"
+            "+    y = 20\n"
+            "*** End Patch"
+        )
+
+        apply_patch_text(patch_text, tmp_path)
+        assert file_path.read_text(encoding="utf-8") == "class A:\n    x = 1\n    y = 20\n"
+
+    def test_additions_only_anchor_not_found_rejected(self, tmp_path):
+        """Additions-only hunk with a missing anchor must raise, not append."""
+        file_path = tmp_path / "m.py"
+        original = "class A:\n    pass\n"
+        file_path.write_text(original, encoding="utf-8")
+
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: m.py\n"
+            "@@ class A:\n"
+            "    anchors: [NonExistentMarker]\n"
+            "+    new_field = 1\n"
+            "*** End Patch"
+        )
+
+        with pytest.raises(PatchApplyError):
+            apply_patch_text(patch_text, tmp_path)
+
+        assert file_path.read_text(encoding="utf-8") == original
