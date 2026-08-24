@@ -7,9 +7,10 @@ import os
 import secrets
 import string
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -800,15 +801,20 @@ class TelegramBot:
         return int(message_id) if message_id is not None else None
 
     # Wall-clock guard for Bot API calls. A silently-dead keep-alive
-    # connection can hang an ``await bot.send_message(...)`` forever with no
-    # error surfacing; this turns that into a bounded failure with one retry.
+    # connection can otherwise hang an API call forever with no error surfacing.
     BOT_API_TIMEOUT_SECONDS: ClassVar[float] = 60.0
     BOT_API_RETRY_DELAY_SECONDS: ClassVar[float] = 2.0
 
-    async def _bot_api_call(self, coro_factory):
-        """Run a Bot API call with a timeout and a single retry."""
+    async def _bot_api_call(
+        self,
+        coro_factory: Callable[[], Awaitable[Any]],
+        *,
+        retry: bool = False,
+    ) -> Any:
+        """Run a Bot API call with a timeout and optionally retry it once."""
         last_exc: Exception | None = None
-        for attempt in range(2):
+        attempts = 2 if retry else 1
+        for attempt in range(attempts):
             if attempt:
                 await asyncio.sleep(self.BOT_API_RETRY_DELAY_SECONDS)
             try:
@@ -823,7 +829,8 @@ class TelegramBot:
                     type(exc).__name__,
                     str(exc)[:120],
                 )
-        raise last_exc if last_exc else RuntimeError("Bot API call failed")
+        assert last_exc is not None
+        raise last_exc
 
     def _register_error_handler(self) -> None:
         """Register a PTB error handler so failures surface instead of
@@ -866,9 +873,7 @@ class TelegramBot:
                 kwargs: dict[str, Any] = {"chat_id": chat_id, "text": part}
                 if reply_markup is not None and part is text_parts[-1]:
                     kwargs["reply_markup"] = reply_markup
-                last_message = await self._bot_api_call(
-                    lambda kwargs=kwargs: self._application.bot.send_message(**kwargs)
-                )
+                last_message = await self._bot_api_call(partial(self._application.bot.send_message, **kwargs))
             return last_message
         kwargs = {"chat_id": chat_id, "text": text}
         if reply_markup is not None:
@@ -896,7 +901,10 @@ class TelegramBot:
             if markdown:
                 kwargs["parse_mode"] = "MarkdownV2"
                 kwargs["disable_web_page_preview"] = True
-            await self._bot_api_call(lambda: self._application.bot.edit_message_text(**kwargs))
+            await self._bot_api_call(
+                lambda: self._application.bot.edit_message_text(**kwargs),
+                retry=True,
+            )
             return True
         except Exception as exc:
             logger.debug("Failed to edit Telegram status message %s/%s: %s", chat_id, message_id, exc)
@@ -1420,7 +1428,10 @@ class TelegramBot:
 
     async def _send_typing_action(self, chat_id: int) -> bool:
         try:
-            await self._application.bot.send_chat_action(chat_id=chat_id, action="typing")
+            await self._bot_api_call(
+                lambda: self._application.bot.send_chat_action(chat_id=chat_id, action="typing"),
+                retry=True,
+            )
             return True
         except Exception as exc:
             logger.warning("Typing action failed for chat %s: %s", chat_id, exc)
