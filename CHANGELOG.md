@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Optional Parallel Search MCP setup**: `anka mcp setup-parallel` explicitly adds the anonymous
+  hosted search and URL-fetching server without changing defaults or overwriting user servers.
+
 ### Changed
 
 - **Unified application session lifecycle**: prompts across CLI, server, embedded client,

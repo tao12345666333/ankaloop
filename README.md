@@ -214,6 +214,13 @@ args = ["-y", "@some/mcp-server"]
 Configured tools are exposed as `mcp__<server>__<tool>`. Tool names are normalized for providers
 with strict function-name requirements.
 
+To explicitly add the optional [Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp)
+server, run `anka mcp setup-parallel`. This adds `https://search.parallel.ai/mcp` as
+`parallel-search`; it does not change the default configuration and refuses to overwrite an
+existing `parallel` or `parallel-search` server. The anonymous endpoint requires no account or API
+key. When its tools are used, user-provided search objectives and search queries are sent to
+Parallel for `web_search`, and requested URLs are sent to Parallel for `web_fetch`.
+
 </details>
 
 See the [quick-start guide](docs/QUICK_START.md), [skills and commands guide](docs/skills-and-commands.md),

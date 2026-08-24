@@ -25,6 +25,7 @@ from .agent_spec import get_default_agent_spec, list_available_agents, load_agen
 from .commands import get_command_manager
 from .config import (
     AnkaloopConfig,
+    Server,
     load_config,
     save_config,
     save_default_config,
@@ -691,6 +692,21 @@ def _attach_sync(
             console.print("\n[yellow]Interrupted. Type /exit to quit.[/yellow]")
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
+
+
+@mcp.command("setup-parallel", help="Add the optional Parallel Search MCP server")
+def mcp_setup_parallel() -> None:
+    """Add Parallel Search MCP without replacing user-owned server configuration."""
+    cfg: AnkaloopConfig = load_config()
+    collision = next((name for name in ("parallel", "parallel-search") if name in cfg.servers), None)
+    if collision is not None:
+        raise typer.BadParameter(f"Server name {collision!r} is already configured; refusing to overwrite it.")
+    cfg.servers["parallel-search"] = Server(url="https://search.parallel.ai/mcp")
+    path = save_config(cfg)
+    console.print(f"[green]Added Parallel Search MCP server to {path}[/green]")
+    console.print(
+        "[yellow]When used, its tools send search objectives, search queries, and requested URLs to Parallel.[/yellow]"
+    )
 
 
 @mcp.command("tools", help="List tools from a configured MCP server")
