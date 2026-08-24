@@ -63,6 +63,17 @@ class TurnService:
         if prompt_hook_output.feedback:
             self._agent.console.print(f"[dim]Hook: {prompt_hook_output.feedback}[/dim]")
 
+        # Journal the durable start of this turn.  turn_id is assigned by the
+        # runtime before the processor runs, so the journal and the eventual
+        # commit share one identity.  Best-effort: a failure here must not
+        # block the turn, but it is logged loudly because crash evidence for
+        # the whole turn is then missing.
+        turn_id = str(self._agent.execution_context.get("turn_id", uuid.uuid4()))
+        try:
+            self._agent._tool_journal.turn_started(turn_id, user_input)
+        except Exception as exc:
+            logger.warning("Tool journal turn_started write failed: %s", exc)
+
         turn_messages = [{"role": "user", "content": user_input}]
 
         try:
@@ -184,7 +195,7 @@ class TurnService:
                 turn_messages.append({"role": "assistant", "content": result})
                 self._agent._capture_session_state(draft)
                 draft.commit_turn(
-                    str(self._agent.execution_context.get("turn_id", uuid.uuid4())),
+                    turn_id,
                     turn_messages,
                 )
                 turn_count = self._agent._conversation_turn_count(draft.messages)
@@ -195,6 +206,10 @@ class TurnService:
                 if periodic_review_due:
                     draft.last_memory_review_turn_count = turn_count
                 self._agent._commit_session_state(draft)
+                try:
+                    self._agent._tool_journal.turn_committed(turn_id, draft.revision)
+                except Exception as exc:
+                    logger.warning("Tool journal turn_committed write failed: %s", exc)
                 if periodic_review_due:
                     self._agent._schedule_periodic_memory_review(
                         conversation_snapshot=draft.messages,
@@ -232,13 +247,27 @@ class TurnService:
 
         except asyncio.CancelledError:
             self._agent._apply_session_state(committed_state)
+            self._journal_turn_terminal(turn_id, cancelled=True)
             raise
-        except (ProviderError, ToolCallProtocolError):
+        except (ProviderError, ToolCallProtocolError) as e:
             self._agent._apply_session_state(committed_state)
+            self._journal_turn_terminal(turn_id, error=f"{type(e).__name__}")
             raise
         except Exception as e:
             self._agent._apply_session_state(committed_state)
+            self._journal_turn_terminal(turn_id, error=f"{type(e).__name__}: {e}")
             if isinstance(e, self._agent._execution_exception_types()):
                 raise
             self._agent.console.print(Text.assemble(("Agent execution failed: ", "red"), str(e)))
             raise self._agent._agent_execution_error(f"Agent execution failed: {e}") from e
+
+    def _journal_turn_terminal(self, turn_id: str, *, cancelled: bool = False, error: str | None = None) -> None:
+        """Best-effort terminal journal event so open intents become
+        ``aborted_unsettled`` instead of suspected crashes."""
+        try:
+            if cancelled:
+                self._agent._tool_journal.turn_cancelled(turn_id)
+            else:
+                self._agent._tool_journal.turn_failed(turn_id, error)
+        except Exception as exc:
+            logger.warning("Tool journal terminal write failed for turn %s: %s", turn_id, exc)
