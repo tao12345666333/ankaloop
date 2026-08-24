@@ -846,7 +846,9 @@ class TelegramBot:
     @staticmethod
     def _is_transient_bot_api_error(exc: Exception) -> bool:
         """Return whether retrying a Bot API failure is safe and useful."""
-        return isinstance(exc, (TimeoutError, *_TELEGRAM_NETWORK_ERROR_TYPES))
+        return isinstance(exc, TimeoutError) or (
+            isinstance(exc, _TELEGRAM_NETWORK_ERROR_TYPES) and not isinstance(exc, _TELEGRAM_BAD_REQUEST_TYPES)
+        )
 
     @staticmethod
     def _is_message_not_modified_error(exc: Exception) -> bool:
