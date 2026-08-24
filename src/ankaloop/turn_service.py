@@ -24,7 +24,7 @@ MEMORY_REVIEW_TURN_INTERVAL = 10
 
 
 class TurnDeadlineExceededError(RuntimeError):
-    """A turn exceeded its wall-clock deadline and was cancelled."""
+    """A turn reached its cancellation deadline and was cancelled."""
 
 
 class TurnService:
@@ -34,28 +34,30 @@ class TurnService:
         self._agent = agent
 
     async def process_message(self, user_input: str, work_dir: Path | None, stream: bool, show_progress: bool) -> str:
-        """Process a single message under a wall-clock deadline.
+        """Process a single message under a cancellation deadline.
 
         The deadline is a backstop for hangs that per-request LLM timeouts
         cannot reach (an agent stuck outside the guarded call path, e.g. on
-        a silently-dead network connection). On expiry the turn is cancelled
-        (session state is rolled back by the cancellation handler) and
-        ``TurnDeadlineExceededError`` is raised.
+        a silently-dead network connection). On expiry, cancellation starts;
+        state rollback and other cancellation cleanup are awaited before
+        ``TurnDeadlineExceededError`` is raised, so observed completion may
+        extend beyond the configured deadline.
         """
         deadline = self._turn_deadline_seconds()
         if deadline and deadline > 0:
+            timeout = asyncio.timeout(deadline)
             try:
-                return await asyncio.wait_for(
-                    self._process_message_inner(user_input, work_dir, stream, show_progress),
-                    timeout=deadline,
-                )
+                async with timeout:
+                    return await self._process_message_inner(user_input, work_dir, stream, show_progress)
             except TimeoutError:
+                if not timeout.expired():
+                    raise
                 self._agent._emit_event(
                     "turn.deadline_exceeded",
                     {"deadline_seconds": deadline, "user_input_preview": user_input[:120]},
                 )
                 raise TurnDeadlineExceededError(
-                    f"Turn exceeded the {deadline:.0f}s wall-clock deadline and was cancelled."
+                    f"Turn reached the {deadline:.0f}s cancellation deadline and was cancelled."
                 ) from None
         return await self._process_message_inner(user_input, work_dir, stream, show_progress)
 

@@ -975,6 +975,49 @@ def test_edit_text_timeout_retries_safe_operation_once():
     asyncio.run(_run())
 
 
+def test_edit_timeout_then_message_not_modified_does_not_fallback_send():
+    async def _run():
+        from ankaloop.telegram import bot as bot_module
+
+        class _MessageNotModifiedError(Exception):
+            pass
+
+        bot = _make_bot_for_typing()
+        bot.BOT_API_TIMEOUT_SECONDS = 0.01
+        bot.BOT_API_RETRY_DELAY_SECONDS = 0
+
+        async def _apply_then_lose_ack(**kwargs):
+            if bot._application.bot.edit_message_text.await_count == 1:
+                await asyncio.Future()
+            raise _MessageNotModifiedError("BadRequest: Message is not modified")
+
+        bot._application.bot.edit_message_text.side_effect = _apply_then_lose_ack
+
+        with patch.object(
+            bot_module,
+            "_TELEGRAM_BAD_REQUEST_TYPES",
+            (_MessageNotModifiedError,),
+        ):
+            await bot._deliver_status_or_text(180, 10, "updated")
+
+        assert bot._application.bot.edit_message_text.await_count == 2
+        bot._application.bot.send_message.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
+def test_edit_text_does_not_retry_permanent_errors():
+    async def _run():
+        bot = _make_bot_for_typing()
+        bot.BOT_API_RETRY_DELAY_SECONDS = 0
+        bot._application.bot.edit_message_text.side_effect = ValueError("invalid request")
+
+        assert await bot._edit_text(185, 10, "updated") is False
+        assert bot._application.bot.edit_message_text.await_count == 1
+
+    asyncio.run(_run())
+
+
 def test_typing_action_timeout_is_bounded_and_retried_once():
     async def _run():
         bot = _make_bot_for_typing()

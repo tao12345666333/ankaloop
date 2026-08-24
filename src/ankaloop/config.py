@@ -90,9 +90,9 @@ class ChatConfig:
     request_timeout_seconds: float = 120.0
     max_retries: int = 2
     retry_base_delay_seconds: float = 0.5
-    # Wall-clock ceiling for a whole turn (all LLM calls + tool executions).
-    # Backstop for hangs that per-request timeouts cannot reach (e.g. an
-    # agent stuck outside the guarded LLM call path). 0 or negative disables.
+    # Deadline that initiates cancellation for a whole turn (all LLM calls +
+    # tool executions). Cancellation cleanup is awaited and may extend the
+    # observed completion time. 0 or negative disables the deadline.
     turn_deadline_seconds: float = 900.0
 
     # Named provider profiles. ``active_provider`` selects which profile is copied

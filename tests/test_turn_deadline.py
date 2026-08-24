@@ -1,6 +1,7 @@
-"""Turn wall-clock deadline + Telegram bot API resilience tests."""
+"""Turn cancellation deadline and Telegram Bot API resilience tests."""
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -54,6 +55,54 @@ async def test_turn_deadline_cancels_hung_turn(tmp_path):
         await agent.turn_service.process_message("hello", None, False, False)
 
     assert "turn.deadline_exceeded" in events
+
+
+@pytest.mark.asyncio
+async def test_turn_deadline_preserves_inner_timeout(tmp_path):
+    """A nested timeout must not be reported as the whole-turn deadline."""
+    chat = ChatConfig()
+    chat.turn_deadline_seconds = 5
+    agent = _agent(tmp_path, chat)
+
+    events: list[str] = []
+    agent._emit_event = lambda t, d: events.append(t)  # type: ignore[method-assign]
+
+    async def inner_timeout(*args, **kwargs):
+        raise TimeoutError("nested operation timed out")
+
+    agent.turn_service._process_message_inner = inner_timeout  # type: ignore[method-assign]
+
+    with pytest.raises(TimeoutError, match="nested operation timed out"):
+        await agent.turn_service.process_message("hello", None, False, False)
+
+    assert "turn.deadline_exceeded" not in events
+
+
+@pytest.mark.asyncio
+async def test_turn_deadline_awaits_cancellation_cleanup(tmp_path):
+    """The deadline starts cancellation but waits for transactional cleanup."""
+    chat = ChatConfig()
+    chat.turn_deadline_seconds = 0.02
+    agent = _agent(tmp_path, chat)
+    cleanup_finished = False
+
+    async def cleanup_on_cancel(*args, **kwargs):
+        nonlocal cleanup_finished
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)
+            cleanup_finished = True
+            raise
+
+    agent.turn_service._process_message_inner = cleanup_on_cancel  # type: ignore[method-assign]
+    started = time.monotonic()
+
+    with pytest.raises(TurnDeadlineExceededError):
+        await agent.turn_service.process_message("hello", None, False, False)
+
+    assert cleanup_finished is True
+    assert time.monotonic() - started >= 0.05
 
 
 @pytest.mark.asyncio

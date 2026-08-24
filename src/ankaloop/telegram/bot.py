@@ -38,10 +38,16 @@ from .scheduler import SCHEDULE_BLUEPRINTS, TelegramScheduledPrompt, TelegramSch
 if TYPE_CHECKING:
     from telegram.ext import Application
 
+_TELEGRAM_BAD_REQUEST_TYPES: tuple[type[BaseException], ...]
+_TELEGRAM_NETWORK_ERROR_TYPES: tuple[type[BaseException], ...]
+
 try:
     from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.error import BadRequest, NetworkError
     from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 except ImportError:  # pragma: no cover - optional dependency
+    _TELEGRAM_BAD_REQUEST_TYPES = ()
+    _TELEGRAM_NETWORK_ERROR_TYPES = ()
     BotCommand = None  # type: ignore[assignment,misc]
     InlineKeyboardButton = None  # type: ignore[assignment,misc]
     InlineKeyboardMarkup = None  # type: ignore[assignment,misc]
@@ -50,6 +56,9 @@ except ImportError:  # pragma: no cover - optional dependency
     CommandHandler = None  # type: ignore[assignment,misc]
     MessageHandler = None  # type: ignore[assignment,misc]
     filters = None  # type: ignore[assignment,misc]
+else:
+    _TELEGRAM_BAD_REQUEST_TYPES = (BadRequest,)
+    _TELEGRAM_NETWORK_ERROR_TYPES = (NetworkError,)
 
 logger = logging.getLogger(__name__)
 
@@ -811,7 +820,7 @@ class TelegramBot:
         *,
         retry: bool = False,
     ) -> Any:
-        """Run a Bot API call with a timeout and optionally retry it once."""
+        """Run a Bot API call with a timeout and optionally retry transient failures once."""
         last_exc: Exception | None = None
         attempts = 2 if retry else 1
         for attempt in range(attempts):
@@ -829,8 +838,20 @@ class TelegramBot:
                     type(exc).__name__,
                     str(exc)[:120],
                 )
+                if attempt + 1 >= attempts or not self._is_transient_bot_api_error(exc):
+                    raise
         assert last_exc is not None
         raise last_exc
+
+    @staticmethod
+    def _is_transient_bot_api_error(exc: Exception) -> bool:
+        """Return whether retrying a Bot API failure is safe and useful."""
+        return isinstance(exc, (TimeoutError, *_TELEGRAM_NETWORK_ERROR_TYPES))
+
+    @staticmethod
+    def _is_message_not_modified_error(exc: Exception) -> bool:
+        """Return whether Telegram reports that an idempotent edit already took effect."""
+        return isinstance(exc, _TELEGRAM_BAD_REQUEST_TYPES) and "message is not modified" in str(exc).lower()
 
     def _register_error_handler(self) -> None:
         """Register a PTB error handler so failures surface instead of
@@ -907,6 +928,8 @@ class TelegramBot:
             )
             return True
         except Exception as exc:
+            if self._is_message_not_modified_error(exc):
+                return True
             logger.debug("Failed to edit Telegram status message %s/%s: %s", chat_id, message_id, exc)
             return False
 
