@@ -119,8 +119,10 @@ class JournalRecovery:
     @property
     def requires_attention(self) -> bool:
         """Whether any open operation or interrupted turn needs inspection."""
-        return bool(self.interrupted_turns) or self.has_corruption or any(
-            decision.status == "indeterminate" for decision in self.decisions
+        return (
+            bool(self.interrupted_turns)
+            or self.has_corruption
+            or any(decision.status == "indeterminate" for decision in self.decisions)
         )
 
     def summary(self) -> dict[str, Any]:
