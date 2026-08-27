@@ -24,8 +24,8 @@ from .tool_execution import (
     ToolExecutor,
     normalize_tool_calls,
 )
-from .ui import LiveUI
 from .tool_journal import classify_recovery_mode
+from .ui import LiveUI
 
 if TYPE_CHECKING:
     from .agent import Agent

@@ -17,6 +17,7 @@ orphaned from its intent.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -318,10 +319,8 @@ def _write_journal_unlocked(path: Path, session_id: str, events: Iterable[dict[s
             os.fsync(handle.fileno())
         os.replace(temp_name, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(temp_name)
-        except OSError:
-            pass
         raise
 
 
