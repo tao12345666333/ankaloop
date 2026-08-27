@@ -938,6 +938,97 @@ def test_typing_start_sends_immediate_chat_action():
     asyncio.run(_run())
 
 
+def test_send_text_timeout_does_not_retry_ambiguous_delivery():
+    async def _run():
+        bot = _make_bot_for_typing()
+        bot.BOT_API_TIMEOUT_SECONDS = 0.01
+        bot.BOT_API_RETRY_DELAY_SECONDS = 0
+
+        async def _hang(**kwargs):
+            await asyncio.Future()
+
+        bot._application.bot.send_message.side_effect = _hang
+
+        with pytest.raises(TimeoutError):
+            await bot.send_text(175, "hello")
+
+        assert bot._application.bot.send_message.await_count == 1
+
+    asyncio.run(_run())
+
+
+def test_edit_text_timeout_retries_safe_operation_once():
+    async def _run():
+        bot = _make_bot_for_typing()
+        bot.BOT_API_TIMEOUT_SECONDS = 0.01
+        bot.BOT_API_RETRY_DELAY_SECONDS = 0
+
+        async def _hang_then_succeed(**kwargs):
+            if bot._application.bot.edit_message_text.await_count == 1:
+                await asyncio.Future()
+
+        bot._application.bot.edit_message_text.side_effect = _hang_then_succeed
+
+        assert await bot._edit_text(180, 10, "updated") is True
+        assert bot._application.bot.edit_message_text.await_count == 2
+
+    asyncio.run(_run())
+
+
+def test_edit_timeout_then_message_not_modified_does_not_fallback_send():
+    async def _run():
+        from telegram.error import BadRequest
+
+        bot = _make_bot_for_typing()
+        bot.BOT_API_TIMEOUT_SECONDS = 0.01
+        bot.BOT_API_RETRY_DELAY_SECONDS = 0
+
+        async def _apply_then_lose_ack(**kwargs):
+            if bot._application.bot.edit_message_text.await_count == 1:
+                await asyncio.Future()
+            raise BadRequest("Message is not modified")
+
+        bot._application.bot.edit_message_text.side_effect = _apply_then_lose_ack
+
+        await bot._deliver_status_or_text(180, 10, "updated")
+
+        assert bot._application.bot.edit_message_text.await_count == 2
+        bot._application.bot.send_message.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
+def test_edit_text_does_not_retry_permanent_errors():
+    async def _run():
+        from telegram.error import BadRequest
+
+        bot = _make_bot_for_typing()
+        bot.BOT_API_RETRY_DELAY_SECONDS = 0
+        bot._application.bot.edit_message_text.side_effect = BadRequest("invalid request")
+
+        assert await bot._edit_text(185, 10, "updated") is False
+        assert bot._application.bot.edit_message_text.await_count == 1
+
+    asyncio.run(_run())
+
+
+def test_typing_action_timeout_is_bounded_and_retried_once():
+    async def _run():
+        bot = _make_bot_for_typing()
+        bot.BOT_API_TIMEOUT_SECONDS = 0.01
+        bot.BOT_API_RETRY_DELAY_SECONDS = 0
+
+        async def _hang(**kwargs):
+            await asyncio.Future()
+
+        bot._application.bot.send_chat_action.side_effect = _hang
+
+        assert await bot._send_typing_action(190) is False
+        assert bot._application.bot.send_chat_action.await_count == 2
+
+    asyncio.run(_run())
+
+
 def test_typing_stop_cancels_task():
     async def _run():
         bot = _make_bot_for_typing()

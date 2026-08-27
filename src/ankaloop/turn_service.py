@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 MEMORY_REVIEW_TURN_INTERVAL = 10
 
 
+class TurnDeadlineExceededError(RuntimeError):
+    """A turn reached its cancellation deadline and was cancelled."""
+
+
 class TurnService:
     """Own draft execution, commit/rollback, and best-effort projections."""
 
@@ -30,6 +34,47 @@ class TurnService:
         self._agent = agent
 
     async def process_message(self, user_input: str, work_dir: Path | None, stream: bool, show_progress: bool) -> str:
+        """Process a single message under a cancellation deadline.
+
+        The deadline is a backstop for hangs that per-request LLM timeouts
+        cannot reach (an agent stuck outside the guarded call path, e.g. on
+        a silently-dead network connection). On expiry, cancellation starts;
+        state rollback and other cancellation cleanup are awaited before
+        ``TurnDeadlineExceededError`` is raised, so observed completion may
+        extend beyond the configured deadline.
+        """
+        deadline = self._turn_deadline_seconds()
+        if deadline and deadline > 0:
+            timeout = asyncio.timeout(deadline)
+            try:
+                async with timeout:
+                    return await self._process_message_inner(user_input, work_dir, stream, show_progress)
+            except TimeoutError:
+                if not timeout.expired():
+                    raise
+                self._agent._emit_event(
+                    "turn.deadline_exceeded",
+                    {"deadline_seconds": deadline, "user_input_preview": user_input[:120]},
+                )
+                raise TurnDeadlineExceededError(
+                    f"Turn reached the {deadline:.0f}s cancellation deadline and was cancelled."
+                ) from None
+        return await self._process_message_inner(user_input, work_dir, stream, show_progress)
+
+    def _turn_deadline_seconds(self) -> float:
+        try:
+            cfg = self._agent._resolve_turn_config()
+        except Exception:
+            cfg = None
+        chat = cfg.chat if cfg is not None and cfg.chat is not None else ChatConfig()
+        try:
+            return max(0.0, float(chat.turn_deadline_seconds))
+        except (TypeError, ValueError, AttributeError):
+            return ChatConfig().turn_deadline_seconds
+
+    async def _process_message_inner(
+        self, user_input: str, work_dir: Path | None, stream: bool, show_progress: bool
+    ) -> str:
         """
         Process a single message (internal implementation).
 

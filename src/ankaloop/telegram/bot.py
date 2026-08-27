@@ -7,11 +7,12 @@ import os
 import secrets
 import string
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..agent import Agent, BusyError, create_agent_by_name
 from ..agent_spec import get_default_agent_spec
@@ -37,10 +38,16 @@ from .scheduler import SCHEDULE_BLUEPRINTS, TelegramScheduledPrompt, TelegramSch
 if TYPE_CHECKING:
     from telegram.ext import Application
 
+_TELEGRAM_BAD_REQUEST_TYPES: tuple[type[BaseException], ...]
+_TELEGRAM_NETWORK_ERROR_TYPES: tuple[type[BaseException], ...]
+
 try:
     from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.error import BadRequest, NetworkError
     from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 except ImportError:  # pragma: no cover - optional dependency
+    _TELEGRAM_BAD_REQUEST_TYPES = ()
+    _TELEGRAM_NETWORK_ERROR_TYPES = ()
     BotCommand = None  # type: ignore[assignment,misc]
     InlineKeyboardButton = None  # type: ignore[assignment,misc]
     InlineKeyboardMarkup = None  # type: ignore[assignment,misc]
@@ -49,6 +56,9 @@ except ImportError:  # pragma: no cover - optional dependency
     CommandHandler = None  # type: ignore[assignment,misc]
     MessageHandler = None  # type: ignore[assignment,misc]
     filters = None  # type: ignore[assignment,misc]
+else:
+    _TELEGRAM_BAD_REQUEST_TYPES = (BadRequest,)
+    _TELEGRAM_NETWORK_ERROR_TYPES = (NetworkError,)
 
 logger = logging.getLogger(__name__)
 
@@ -799,6 +809,85 @@ class TelegramBot:
         message_id = getattr(message, "message_id", None)
         return int(message_id) if message_id is not None else None
 
+    # Wall-clock guard for Bot API calls. A silently-dead keep-alive
+    # connection can otherwise hang an API call forever with no error surfacing.
+    BOT_API_TIMEOUT_SECONDS: ClassVar[float] = 60.0
+    BOT_API_RETRY_DELAY_SECONDS: ClassVar[float] = 2.0
+
+    async def _bot_api_call(
+        self,
+        coro_factory: Callable[[], Awaitable[Any]],
+        *,
+        retry: bool = False,
+    ) -> Any:
+        """Run a Bot API call with a timeout and optionally retry transient failures once."""
+        last_exc: Exception | None = None
+        attempts = 2 if retry else 1
+        for attempt in range(attempts):
+            if attempt:
+                await asyncio.sleep(self.BOT_API_RETRY_DELAY_SECONDS)
+            try:
+                return await asyncio.wait_for(coro_factory(), timeout=self.BOT_API_TIMEOUT_SECONDS)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Bot API call failed (attempt %d): %s: %s",
+                    attempt + 1,
+                    type(exc).__name__,
+                    str(exc)[:120],
+                )
+                if attempt + 1 >= attempts or not self._is_transient_bot_api_error(exc):
+                    raise
+        assert last_exc is not None
+        raise last_exc
+
+    @staticmethod
+    def _is_transient_bot_api_error(exc: Exception) -> bool:
+        """Return whether retrying a Bot API failure is safe and useful."""
+        return isinstance(exc, TimeoutError) or (
+            isinstance(exc, _TELEGRAM_NETWORK_ERROR_TYPES) and not isinstance(exc, _TELEGRAM_BAD_REQUEST_TYPES)
+        )
+
+    @staticmethod
+    def _is_message_not_modified_error(exc: Exception) -> bool:
+        """Return whether Telegram reports that an idempotent edit already took effect."""
+        return isinstance(exc, _TELEGRAM_BAD_REQUEST_TYPES) and "message is not modified" in str(exc).lower()
+
+    def _register_error_handler(self) -> None:
+        """Register a PTB error handler so failures surface instead of
+        disappearing with "No error handlers are registered"."""
+        app = self._application
+
+        async def _on_error(update: object, context: Any) -> None:
+            error = getattr(context, "error", None)
+            logger.error("Unhandled Telegram update error", exc_info=error)
+            effective_chat = None
+            effective_message = getattr(update, "effective_message", None)
+            if effective_message is not None:
+                effective_chat = getattr(effective_message, "chat_id", None)
+            if effective_chat is None:
+                callback_query = getattr(update, "callback_query", None)
+                if callback_query is not None:
+                    effective_chat = getattr(getattr(callback_query, "message", None), "chat_id", None)
+            if effective_chat is None:
+                return
+            try:
+                await self._bot_api_call(
+                    lambda: context.bot.send_message(
+                        chat_id=effective_chat,
+                        text="Internal error while processing the update. Please retry.",
+                    )
+                )
+            except Exception:
+                logger.warning("Failed to deliver error notice to chat %s", effective_chat)
+
+        try:
+            app.add_error_handler(_on_error)
+        except Exception:
+            logger.debug("Failed to register PTB error handler", exc_info=True)
+
     async def send_text(self, chat_id: int, text: str, *, reply_markup: Any = None) -> Any:
         if _utf16_len(text) > self._formatter.max_length:
             last_message: Any = None
@@ -807,19 +896,21 @@ class TelegramBot:
                 kwargs: dict[str, Any] = {"chat_id": chat_id, "text": part}
                 if reply_markup is not None and part is text_parts[-1]:
                     kwargs["reply_markup"] = reply_markup
-                last_message = await self._application.bot.send_message(**kwargs)
+                last_message = await self._bot_api_call(partial(self._application.bot.send_message, **kwargs))
             return last_message
         kwargs = {"chat_id": chat_id, "text": text}
         if reply_markup is not None:
             kwargs["reply_markup"] = reply_markup
-        return await self._application.bot.send_message(**kwargs)
+        return await self._bot_api_call(lambda: self._application.bot.send_message(**kwargs))
 
     async def send_markdown(self, chat_id: int, text: str) -> Any:
-        return await self._application.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode="MarkdownV2",
-            disable_web_page_preview=True,
+        return await self._bot_api_call(
+            lambda: self._application.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode="MarkdownV2",
+                disable_web_page_preview=True,
+            )
         )
 
     async def _edit_text(self, chat_id: int, message_id: int, text: str, *, markdown: bool = False) -> bool:
@@ -833,9 +924,14 @@ class TelegramBot:
             if markdown:
                 kwargs["parse_mode"] = "MarkdownV2"
                 kwargs["disable_web_page_preview"] = True
-            await self._application.bot.edit_message_text(**kwargs)
+            await self._bot_api_call(
+                lambda: self._application.bot.edit_message_text(**kwargs),
+                retry=True,
+            )
             return True
         except Exception as exc:
+            if self._is_message_not_modified_error(exc):
+                return True
             logger.debug("Failed to edit Telegram status message %s/%s: %s", chat_id, message_id, exc)
             return False
 
@@ -1143,6 +1239,7 @@ class TelegramBot:
         except AttributeError:
             await asyncio.to_thread(self._application.run_polling)
             return
+        self._register_error_handler()
         await updater.start_polling()
         await self._stop_event.wait()
         await updater.stop()
@@ -1172,6 +1269,7 @@ class TelegramBot:
                 webhook_url=url,
             )
             return
+        self._register_error_handler()
         await updater.start_webhook(listen=listen, port=port, webhook_url=url)
         await self._stop_event.wait()
         await updater.stop()
@@ -1355,7 +1453,10 @@ class TelegramBot:
 
     async def _send_typing_action(self, chat_id: int) -> bool:
         try:
-            await self._application.bot.send_chat_action(chat_id=chat_id, action="typing")
+            await self._bot_api_call(
+                lambda: self._application.bot.send_chat_action(chat_id=chat_id, action="typing"),
+                retry=True,
+            )
             return True
         except Exception as exc:
             logger.warning("Typing action failed for chat %s: %s", chat_id, exc)
