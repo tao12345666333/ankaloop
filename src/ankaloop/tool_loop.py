@@ -24,7 +24,7 @@ from .tool_execution import (
     ToolExecutor,
     normalize_tool_calls,
 )
-from .tool_journal import classify_recovery_mode
+from .tool_journal import canonical_args_hash, classify_recovery_mode
 from .ui import LiveUI
 
 if TYPE_CHECKING:
@@ -402,6 +402,7 @@ class ToolLoop:
                         # write failure blocks execution rather than run an
                         # unjournaled side effect.
                         journal_turn_id = str(self._agent.execution_context.get("turn_id", "direct"))
+                        journal_args_hash = canonical_args_hash(tool_name, args)
                         self._agent._tool_journal.tool_intent(
                             journal_turn_id,
                             tool_id,
@@ -495,17 +496,20 @@ class ToolLoop:
                                 tool_id,
                                 success=bool(tool_response_data.get("success", True)),
                                 duration_ms=tool_duration_ms,
+                                args_hash=journal_args_hash,
                             )
 
                         except asyncio.CancelledError:
                             tool_duration_ms = (time.time() - tool_start_time) * 1000
+                            # No T2 is journaled here: execution was cut short
+                            # mid-flight, so recovery keeps this intent open.
                             self._agent._emit_event(
                                 "tool.call_cancelled",
                                 {
                                     "tool_name": tool_name,
                                     "tool_id": tool_id,
                                     "success": False,
-                                    "settled": True,
+                                    "settled": False,
                                     "duration_ms": tool_duration_ms,
                                 },
                             )
@@ -543,6 +547,7 @@ class ToolLoop:
                                 success=False,
                                 duration_ms=tool_duration_ms,
                                 error=error_msg,
+                                args_hash=journal_args_hash,
                             )
 
                 continue

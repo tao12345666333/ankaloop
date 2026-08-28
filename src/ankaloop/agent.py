@@ -57,7 +57,7 @@ from .tool_execution import (
     ToolExecutionContext,
     ToolExecutor,
 )
-from .tool_journal import ToolJournal
+from .tool_journal import JournalRecovery, ToolJournal
 from .tool_loop import ToolLoop
 from .turn_service import TurnService
 
@@ -257,6 +257,7 @@ class Agent:
         self.context_builder = ContextBuilder(self)
         self.tool_loop = ToolLoop(self)
         self.turn_service = TurnService(self)
+        self._recovery_status: JournalRecovery | None = None
         self._runtime = SessionRuntime(
             self.session_id,
             self._process_turn_request,
@@ -820,6 +821,7 @@ class Agent:
         success: bool,
         duration_ms: float | None = None,
         error: str | None = None,
+        args_hash: str | None = None,
     ) -> None:
         """Journal the T2 settlement of one tool operation (best-effort).
 
@@ -835,6 +837,7 @@ class Agent:
                 success=success,
                 duration_ms=duration_ms,
                 error=error,
+                args_hash=args_hash,
             )
         except Exception as exc:
             logger.warning("Tool journal settlement failed for %s: %s", tool_call_id, exc)
@@ -880,9 +883,21 @@ class Agent:
             )
         self._emit_event("turn.recovery_detected", {"summary": recovery.summary()})
 
-    def get_recovery_status(self):
+    def get_recovery_status(self) -> JournalRecovery | None:
         """Return the latest journal recovery scan for this session."""
-        return getattr(self, "_recovery_status", None) or self._tool_journal.resolve()
+        return self._recovery_status or self._tool_journal.resolve()
+
+    def acknowledge_recovery(self) -> dict[str, Any]:
+        """Acknowledge all open crash suspects after human review.
+
+        The journal is evidence-only and recovery is fail-closed: without
+        an explicit operator decision, an interrupted turn would resurface
+        on every startup.  The cached scan is refreshed afterwards so the
+        acknowledged state is visible immediately.
+        """
+        acked = self._tool_journal.mark_recovery_acknowledged()
+        self._recovery_status = self._tool_journal.resolve()
+        return acked
 
     async def _run_memory_review(
         self,

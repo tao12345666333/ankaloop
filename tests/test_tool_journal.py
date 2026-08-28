@@ -82,14 +82,65 @@ class TestToolJournalStore:
         assert recovery.interrupted_turns[0].turn_id == "tb"
         assert recovery.interrupted_turns[0].open_operations == ("tb:cX",)
 
+    @pytest.mark.parametrize("padding", range(0, 13))
+    def test_trim_cut_never_lands_inside_a_turn(self, tmp_path: Path, padding: int):
+        """A trim target between turns must shift forward to a boundary.
+
+        The naive ``min(drop_until, last_turn_start)`` clamp cuts at an
+        arbitrary offset, which slices an older turn and manufactures a
+        false crash or corruption.  Whatever the padding, the retained
+        journal must resolve identically to the same turns without any
+        trimming: no orphaned outcome, no manufactured indeterminate.
+        """
+        journal = ToolJournal(tmp_path, f"sess-pad-{padding}", max_events=10)
+        # Turn A: 1 + padding * 2 + 1 settled events (trimmable).
+        journal.turn_started("ta", "old")
+        journal.tool_intent("ta", "cA", "grep", {"q": "a"})
+        for i in range(padding):
+            journal.tool_intent("ta", f"cp{i}", "grep", {"q": i})
+            journal.tool_outcome("ta", f"cp{i}", success=True)
+        journal.tool_outcome("ta", "cA", success=True)
+        journal.turn_committed("ta", 1)
+        # Turn B: committed, would end up partially retained if cut mid-turn.
+        journal.turn_started("tb", "middle")
+        journal.tool_intent("tb", "cB", "read_file", {"path": "x"})
+        journal.tool_outcome("tb", "cB", success=True)
+        journal.turn_committed("tb", 2)
+        # Turn C: open operation that must survive trimming.
+        journal.turn_started("tc", "new")
+        journal.tool_intent("tc", "cC", "bash", {"command": "echo"})
+
+        recovery = journal.resolve()
+        assert recovery.interrupted_turns[0].turn_id == "tc"
+        assert recovery.interrupted_turns[0].open_operations == ("tc:cC",)
+        assert not recovery.has_corruption
+        statuses = {d.operation_id: d.status for d in recovery.decisions}
+        # Every retained settled op stays completed; nothing was manufactured.
+        for settled_op in ("ta:cA", "tb:cB"):
+            assert statuses.get(settled_op, "completed") == "completed"
+        # Any retained turn keeps its full event sequence (no half-turn cut).
+        events = journal.read()
+        retained_turns = {str(e.get("turn_id")) for e in events if e.get("kind") == "turn_started"}
+        # ta: started + intent + padding*2 + outcome + committed.
+        expected_events = {"ta": 4 + 2 * padding, "tb": 4, "tc": 2}
+        for turn_id in retained_turns:
+            count = sum(1 for e in events if str(e.get("turn_id")) == turn_id)
+            assert count == expected_events[turn_id]
+
 
 class TestResolverDecisions:
     def test_settled_operation_is_completed(self):
         recovery = resolve_journal(
             [
                 {"kind": "turn_started", "turn_id": "t", "protocol": JOURNAL_PROTOCOL},
-                {"kind": "tool_intent", "turn_id": "t", "operation_id": "t:c", "tool_call_id": "c",
-                 "tool_name": "bash", "recovery_mode": "never_auto_retry"},
+                {
+                    "kind": "tool_intent",
+                    "turn_id": "t",
+                    "operation_id": "t:c",
+                    "tool_call_id": "c",
+                    "tool_name": "bash",
+                    "recovery_mode": "never_auto_retry",
+                },
                 {"kind": "tool_outcome", "turn_id": "t", "operation_id": "t:c", "success": True},
                 {"kind": "turn_committed", "turn_id": "t", "revision": 3},
             ]
@@ -102,15 +153,20 @@ class TestResolverDecisions:
         recovery = resolve_journal(
             [
                 {"kind": "turn_started", "turn_id": "t", "protocol": JOURNAL_PROTOCOL},
-                {"kind": "tool_intent", "turn_id": "t", "operation_id": "t:c", "tool_call_id": "c",
-                 "tool_name": "bash", "recovery_mode": "never_auto_retry"},
+                {
+                    "kind": "tool_intent",
+                    "turn_id": "t",
+                    "operation_id": "t:c",
+                    "tool_call_id": "c",
+                    "tool_name": "bash",
+                    "recovery_mode": "never_auto_retry",
+                },
             ]
         )
         assert recovery.requires_attention
         decision = recovery.decisions[0]
         assert decision.status == "indeterminate"
         assert decision.recovery_mode == "never_auto_retry"
-        assert recovery.interrupted_turns == recovery.interrupted_turns  # one entry
         assert len(recovery.interrupted_turns) == 1
         assert recovery.interrupted_turns[0].turn_id == "t"
 
@@ -118,8 +174,14 @@ class TestResolverDecisions:
         recovery = resolve_journal(
             [
                 {"kind": "turn_started", "turn_id": "t", "protocol": JOURNAL_PROTOCOL},
-                {"kind": "tool_intent", "turn_id": "t", "operation_id": "t:c", "tool_call_id": "c",
-                 "tool_name": "write_file", "recovery_mode": "never_auto_retry"},
+                {
+                    "kind": "tool_intent",
+                    "turn_id": "t",
+                    "operation_id": "t:c",
+                    "tool_call_id": "c",
+                    "tool_name": "write_file",
+                    "recovery_mode": "never_auto_retry",
+                },
                 {"kind": "turn_cancelled", "turn_id": "t"},
             ]
         )
@@ -144,18 +206,141 @@ class TestResolverDecisions:
         recovery = resolve_journal(
             [
                 {"kind": "turn_started", "turn_id": "t", "protocol": JOURNAL_PROTOCOL},
-                {"kind": "tool_intent", "turn_id": "t", "operation_id": "t:c", "tool_call_id": "c",
-                 "tool_name": "bash", "recovery_mode": "never_auto_retry"},
-                {"kind": "tool_intent", "turn_id": "t", "operation_id": "t:c", "tool_call_id": "c",
-                 "tool_name": "bash", "recovery_mode": "never_auto_retry"},
+                {
+                    "kind": "tool_intent",
+                    "turn_id": "t",
+                    "operation_id": "t:c",
+                    "tool_call_id": "c",
+                    "tool_name": "bash",
+                    "recovery_mode": "never_auto_retry",
+                },
+                {
+                    "kind": "tool_intent",
+                    "turn_id": "t",
+                    "operation_id": "t:c",
+                    "tool_call_id": "c",
+                    "tool_name": "bash",
+                    "recovery_mode": "never_auto_retry",
+                },
             ]
         )
         assert recovery.has_corruption
+
+    def test_outcome_hash_mismatch_is_corruption(self):
+        recovery = resolve_journal(
+            [
+                {"kind": "turn_started", "turn_id": "t", "protocol": JOURNAL_PROTOCOL},
+                {
+                    "kind": "tool_intent",
+                    "turn_id": "t",
+                    "operation_id": "t:c",
+                    "tool_call_id": "c",
+                    "tool_name": "bash",
+                    "recovery_mode": "never_auto_retry",
+                    "canonical_args_hash": "aaa",
+                },
+                {
+                    "kind": "tool_outcome",
+                    "turn_id": "t",
+                    "operation_id": "t:c",
+                    "success": True,
+                    "canonical_args_hash": "bbb",
+                },
+                {"kind": "turn_committed", "turn_id": "t", "revision": 1},
+            ]
+        )
+        assert recovery.has_corruption
+        assert any(d.reason == "outcome args hash differs from intent" for d in recovery.decisions)
+
+    def test_outcome_hash_match_is_completed(self):
+        recovery = resolve_journal(
+            [
+                {"kind": "turn_started", "turn_id": "t", "protocol": JOURNAL_PROTOCOL},
+                {
+                    "kind": "tool_intent",
+                    "turn_id": "t",
+                    "operation_id": "t:c",
+                    "tool_call_id": "c",
+                    "tool_name": "bash",
+                    "recovery_mode": "never_auto_retry",
+                    "canonical_args_hash": "aaa",
+                },
+                {
+                    "kind": "tool_outcome",
+                    "turn_id": "t",
+                    "operation_id": "t:c",
+                    "success": True,
+                    "canonical_args_hash": "aaa",
+                },
+                {"kind": "turn_committed", "turn_id": "t", "revision": 1},
+            ]
+        )
+        assert not recovery.has_corruption
+        assert recovery.decisions[0].status == "completed"
 
     def test_empty_and_garbage_events_are_tolerated(self):
         assert resolve_journal([]).requires_attention is False
         recovery = resolve_journal([{"kind": "unknown"}, {"other": 1}])
         assert not recovery.has_corruption
+
+    def test_acknowledged_operations_stop_requiring_attention(self):
+        events = [
+            {"kind": "turn_started", "turn_id": "t", "protocol": JOURNAL_PROTOCOL},
+            {
+                "kind": "tool_intent",
+                "turn_id": "t",
+                "operation_id": "t:c",
+                "tool_call_id": "c",
+                "tool_name": "bash",
+                "recovery_mode": "never_auto_retry",
+            },
+            {"kind": "recovery_acknowledged", "turns": ["t"], "operations": ["t:c"]},
+        ]
+        assert resolve_journal(events).requires_attention is False
+        decision = resolve_journal(events).decisions[0]
+        assert decision.status == "acknowledged"
+        # A new open operation after the ack is still a crash suspect.
+        events.append(
+            {
+                "kind": "tool_intent",
+                "turn_id": "t2",
+                "operation_id": "t2:c2",
+                "tool_call_id": "c2",
+                "tool_name": "bash",
+                "recovery_mode": "never_auto_retry",
+            }
+        )
+        recovery = resolve_journal(events)
+        assert recovery.requires_attention is True
+        assert any(d.operation_id == "t2:c2" and d.status == "indeterminate" for d in recovery.decisions)
+
+
+class TestAcknowledgeWorkflow:
+    def test_mark_recovery_acknowledged_persists_and_resolves(self, journal: ToolJournal):
+        assert journal.mark_recovery_acknowledged() == {"turns": [], "operations": []}
+        journal.turn_started("t1", "do work")
+        journal.tool_intent("t1", "c1", "bash", {"command": "echo"})
+
+        assert journal.resolve().requires_attention is True
+        acked = journal.mark_recovery_acknowledged()
+        assert acked == {"turns": ["t1"], "operations": ["t1:c1"]}
+
+        recovery = journal.resolve()
+        assert recovery.requires_attention is False
+        assert recovery.interrupted_turns[0].acknowledged is True
+        assert recovery.decisions[0].status == "acknowledged"
+        # The ack is durable across a fresh journal instance.
+        reopened = ToolJournal(journal.root, journal.session_id)
+        assert reopened.resolve().requires_attention is False
+
+    def test_ack_without_open_operations_appends_nothing(self, journal: ToolJournal):
+        journal.turn_started("t1", "hi")
+        journal.tool_intent("t1", "c1", "grep", {"q": 1})
+        journal.tool_outcome("t1", "c1", success=True)
+        journal.turn_committed("t1", 1)
+        before = journal.read()
+        assert journal.mark_recovery_acknowledged() == {"turns": [], "operations": []}
+        assert journal.read() == before
 
 
 class TestClassification:
@@ -243,6 +428,10 @@ class TestToolLoopWiring:
 
         recovery = agent._tool_journal.resolve()
         assert [d.status for d in recovery.decisions] == ["completed"]
+        # T2 carries the intent's canonical args hash for settlement
+        # verification.
+        outcome = events[1]
+        assert outcome["canonical_args_hash"] == canonical_args_hash("bash", {"command": "echo hi"})
 
     @pytest.mark.asyncio
     async def test_denied_tool_writes_no_intent(self, agent, tmp_path: Path):
@@ -307,11 +496,11 @@ class TestTurnServiceWiring(TestToolLoopWiring):
             mock_cfg.return_value = AnkaloopConfig(servers={}, chat=None, context=ContextConfig())
             with patch.object(agent, "_run_user_prompt_hooks") as mock_hooks:
                 mock_hooks.return_value = MagicMock(continue_execution=True, stop_reason=None, feedback=None)
-                with patch.object(
-                    agent, "_build_tools_and_registry", return_value=([], {})
-                ), patch.object(
-                    agent, "_get_system_prompt", return_value="sys"
-                ), patch("ankaloop.llm.create_llm_client") as mock_client:
+                with (
+                    patch.object(agent, "_build_tools_and_registry", return_value=([], {})),
+                    patch.object(agent, "_get_system_prompt", return_value="sys"),
+                    patch("ankaloop.llm.create_llm_client"),
+                ):
                     # A provider failure journals turn_failed, not a commit.
                     from ankaloop.llm import ProviderError, ProviderErrorKind
 

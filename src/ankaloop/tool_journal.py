@@ -10,9 +10,9 @@ canonical session snapshot remains the whole-turn commit, and the journal
 answers "what was in flight when the process died?".
 
 The journal is an append-only JSONL file next to the session snapshot
-(``<session-id>.journal.jsonl``).  Trimming never crosses the boundary of
-the newest ``turn_started`` event so an open operation can never be
-orphaned from its intent.
+(``<session-id>.journal.jsonl``).  Trimming only ever cuts at
+``turn_started`` boundaries so an open operation can never be orphaned
+from its intent and no false crash evidence can be manufactured.
 """
 
 from __future__ import annotations
@@ -61,6 +61,8 @@ TOOL_OUTCOME = "tool_outcome"
 TURN_COMMITTED = "turn_committed"
 TURN_FAILED = "turn_failed"
 TURN_CANCELLED = "turn_cancelled"
+RECOVERY_ACKNOWLEDGED = "recovery_acknowledged"
+"""Operator acknowledgement of reviewed interrupted turns / open operations."""
 
 
 class ToolJournalError(RuntimeError):
@@ -90,7 +92,7 @@ class ToolOperationDecision:
     operation_id: str
     tool_name: str
     status: str
-    """completed | indeterminate | aborted_unsettled | corruption"""
+    """completed | indeterminate | acknowledged | aborted_unsettled | corruption"""
     reason: str
     turn_id: str | None = None
     tool_call_id: str | None = None
@@ -106,6 +108,8 @@ class InterruptedTurn:
     terminal: bool
     """False means the process likely died mid-turn (no terminal event)."""
     open_operations: tuple[str, ...] = field(default_factory=tuple)
+    acknowledged: bool = False
+    """True once an operator explicitly acknowledged this interruption."""
 
 
 @dataclass(frozen=True)
@@ -120,7 +124,7 @@ class JournalRecovery:
     def requires_attention(self) -> bool:
         """Whether any open operation or interrupted turn needs inspection."""
         return (
-            bool(self.interrupted_turns)
+            any(not turn.acknowledged for turn in self.interrupted_turns)
             or self.has_corruption
             or any(decision.status == "indeterminate" for decision in self.decisions)
         )
@@ -132,6 +136,7 @@ class JournalRecovery:
                 {
                     "turn_id": turn.turn_id,
                     "terminal": turn.terminal,
+                    "acknowledged": turn.acknowledged,
                     "open_operations": list(turn.open_operations),
                 }
                 for turn in self.interrupted_turns
@@ -214,8 +219,14 @@ class ToolJournal:
         success: bool,
         duration_ms: float | None = None,
         error: str | None = None,
+        args_hash: str | None = None,
     ) -> dict[str, Any]:
-        """Record the T2 boundary: the result is part of the conversation."""
+        """Record the T2 boundary: the result is part of the conversation.
+
+        ``args_hash`` must be the intent's ``canonical_args_hash``; a
+        mismatch between the two is corruption, because the outcome cannot
+        belong to that intent's execution.
+        """
         event: dict[str, Any] = {
             "kind": TOOL_OUTCOME,
             "turn_id": turn_id,
@@ -223,6 +234,8 @@ class ToolJournal:
             "tool_call_id": tool_call_id,
             "success": success,
         }
+        if args_hash is not None:
+            event["canonical_args_hash"] = args_hash
         if duration_ms is not None:
             event["duration_ms"] = duration_ms
         if error is not None:
@@ -260,6 +273,35 @@ class ToolJournal:
         """Scan retained events and produce the fail-closed decision table."""
         return resolve_journal(self.read())
 
+    def mark_recovery_acknowledged(self) -> dict[str, Any]:
+        """Durably acknowledge every open operation as reviewed by an operator.
+
+        Fail-closed recovery never auto-retries, so open crash suspects
+        would resurface on every startup without an explicit human
+        decision.  This appends one ``recovery_acknowledged`` event naming
+        the interrupted turns and open operations; the next ``resolve``
+        reports them as ``acknowledged`` instead of ``indeterminate``.
+        Anything opened *after* the acknowledgement is still a crash
+        suspect.  The read and the append are not one atomic transaction;
+        a concurrent operation missed here simply stays flagged, which is
+        the safe direction.
+        """
+        with self._lock:
+            recovery = self.resolve()
+            turn_ids = sorted(turn.turn_id for turn in recovery.interrupted_turns)
+            operation_ids = sorted(
+                decision.operation_id for decision in recovery.decisions if decision.status == "indeterminate"
+            )
+            if turn_ids or operation_ids:
+                self._append(
+                    {
+                        "kind": RECOVERY_ACKNOWLEDGED,
+                        "turns": turn_ids,
+                        "operations": operation_ids,
+                    }
+                )
+            return {"turns": turn_ids, "operations": operation_ids}
+
     def delete(self) -> None:
         """Delete the durable journal for this session."""
         if not self.enabled:
@@ -293,6 +335,22 @@ class ToolJournal:
         return record
 
 
+def _fsync_dir(path: Path) -> None:
+    """Best-effort directory fsync so the rename itself is durable.
+
+    Without it a crash after ``os.replace`` can revert the journal to its
+    pre-append state, silently dropping T1 intent evidence for a tool
+    that already executed.  Filesystems that reject directory fsync fall
+    back to OS-level rename guarantees.
+    """
+    with contextlib.suppress(OSError):
+        dir_fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+
 def _read_journal_unlocked(path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     if not path.exists():
@@ -320,6 +378,7 @@ def _write_journal_unlocked(path: Path, session_id: str, events: Iterable[dict[s
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_name, path)
+        _fsync_dir(path.parent)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(temp_name)
@@ -327,23 +386,30 @@ def _write_journal_unlocked(path: Path, session_id: str, events: Iterable[dict[s
 
 
 def _trim_events(events: list[dict[str, Any]], max_events: int) -> list[dict[str, Any]]:
-    """Drop old events without crossing the newest ``turn_started`` boundary.
+    """Drop old events without ever splitting a turn.
 
-    Cutting between an intent and its outcome would manufacture a false
-    crash, so the trim boundary is clamped to the newest turn start.
+    Cutting anywhere inside a turn can orphan an intent from its outcome
+    (a manufactured false crash) or an outcome from its intent (a
+    manufactured corruption), so the cut is clamped to the first
+    ``turn_started`` boundary at or after the target drop point.  A cut
+    at a turn boundary drops whole turns, so nothing can be manufactured;
+    the newest turn is never a cut target, so an open operation can never
+    be orphaned from its intent either.  When no safe boundary exists
+    (one giant turn, or no ``turn_started`` at all), everything is kept:
+    unbounded growth beats manufactured crash evidence.
     """
     if len(events) <= max_events:
         return events
-    last_turn_start = max(
-        (index for index, event in enumerate(events) if event.get("kind") == TURN_STARTED),
-        default=0,
-    )
     retained = max(1, int(max_events * 0.9))
     drop_until = len(events) - retained
     if drop_until <= 0:
         return events
-    drop_until = min(drop_until, last_turn_start)
-    return events[drop_until:] if drop_until > 0 else events
+    cut_candidates = [
+        index for index, event in enumerate(events) if event.get("kind") == TURN_STARTED and index >= drop_until
+    ]
+    if not cut_candidates:
+        return events
+    return events[cut_candidates[0] :]
 
 
 def resolve_journal(events: list[dict[str, Any]]) -> JournalRecovery:
@@ -351,15 +417,20 @@ def resolve_journal(events: list[dict[str, Any]]) -> JournalRecovery:
 
     - intent + outcome -> completed
     - intent without outcome, turn has no terminal event -> indeterminate
-      (crash suspected: the side effect may have happened)
+      (crash suspected: the side effect may have happened), unless the
+      operation was explicitly acknowledged -> acknowledged
     - intent without outcome, turn reached a terminal event ->
-      aborted_unsettled (turn was closed knowingly, never auto-retried)
-    - duplicated operation identity or orphaned outcome -> corruption
+      aborted_unsettled (turn was closed knowingly, never auto-retried;
+      recorded evidence, but not a crash suspect)
+    - duplicated operation identity, orphaned outcome, or an outcome whose
+      args hash differs from its intent -> corruption
     """
     intents: dict[str, dict[str, Any]] = {}
     outcomes: dict[str, dict[str, Any]] = {}
     turn_terminal: dict[str, str] = {}
     turn_ids: set[str] = set()
+    acknowledged_turns: set[str] = set()
+    acknowledged_operations: set[str] = set()
     corruption_reasons: list[str] = []
 
     for event in events:
@@ -370,6 +441,14 @@ def resolve_journal(events: list[dict[str, Any]]) -> JournalRecovery:
         if kind in TERMINAL_TURN_EVENTS:
             turn_id = str(event.get("turn_id"))
             turn_terminal[turn_id] = str(kind)
+            continue
+        if kind == RECOVERY_ACKNOWLEDGED:
+            turns = event.get("turns")
+            operations = event.get("operations")
+            if isinstance(turns, list):
+                acknowledged_turns.update(str(turn_id) for turn_id in turns)
+            if isinstance(operations, list):
+                acknowledged_operations.update(str(operation_id) for operation_id in operations)
             continue
         if kind == TOOL_INTENT:
             operation_id = str(event.get("operation_id"))
@@ -400,6 +479,20 @@ def resolve_journal(events: list[dict[str, Any]]) -> JournalRecovery:
                 )
             )
             continue
+        intent_hash = intent.get("canonical_args_hash")
+        outcome_hash = outcome.get("canonical_args_hash")
+        if intent_hash and outcome_hash and intent_hash != outcome_hash:
+            decisions.append(
+                ToolOperationDecision(
+                    operation_id=operation_id,
+                    tool_name=str(intent.get("tool_name") or "unknown"),
+                    status="corruption",
+                    reason="outcome args hash differs from intent",
+                    turn_id=intent.get("turn_id"),
+                    tool_call_id=intent.get("tool_call_id"),
+                )
+            )
+            continue
         decisions.append(
             ToolOperationDecision(
                 operation_id=operation_id,
@@ -421,6 +514,8 @@ def resolve_journal(events: list[dict[str, Any]]) -> JournalRecovery:
         open_operations_by_turn.setdefault(turn_id, []).append(operation_id)
         if turn_id in turn_terminal:
             status, reason = "aborted_unsettled", "turn ended while operation was open"
+        elif operation_id in acknowledged_operations:
+            status, reason = "acknowledged", "crash suspect acknowledged by operator"
         else:
             status, reason = "indeterminate", "crash suspected between intent and outcome"
         decisions.append(
@@ -443,6 +538,7 @@ def resolve_journal(events: list[dict[str, Any]]) -> JournalRecovery:
                     turn_id=turn_id,
                     terminal=False,
                     open_operations=tuple(sorted(open_operations_by_turn.get(turn_id, []))),
+                    acknowledged=turn_id in acknowledged_turns,
                 )
             )
 
