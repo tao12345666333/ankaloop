@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/ankaloop/"><img src="https://img.shields.io/pypi/v/ankaloop?include_prereleases&label=PyPI&color=1488ff" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/ankaloop/"><img src="https://img.shields.io/pypi/v/ankaloop?label=PyPI&color=1488ff" alt="PyPI version"></a>
   <a href="https://pypi.org/project/ankaloop/"><img src="https://img.shields.io/pypi/pyversions/ankaloop?color=0957f5" alt="Supported Python versions"></a>
   <a href="https://github.com/tao12345666333/ankaloop/actions/workflows/ci.yml"><img src="https://github.com/tao12345666333/ankaloop/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/license-Apache--2.0-22dff3" alt="Apache-2.0 license"></a>
@@ -30,13 +30,10 @@ It combines a capable tool loop, persistent context, multi-agent delegation, ski
 hooks, and automation in one Python package that you can run locally or self-host.
 
 ```bash
-python -m pip install --pre ankaloop
+python -m pip install ankaloop
 anka init
 anka
 ```
-
-> **Release status:** AnkaLoop is currently available as a release candidate. APIs and
-> configuration may still change before the next stable release.
 
 ## Why AnkaLoop
 
@@ -60,8 +57,8 @@ AnkaLoop requires **Python 3.11+** and credentials for a supported model provide
 ### Install from PyPI
 
 ```bash
-# Include pre-releases while AnkaLoop is in RC
-python -m pip install --pre ankaloop
+# Install the latest stable release
+python -m pip install ankaloop
 
 # Configure a provider, then start in the current project
 anka init
@@ -76,14 +73,14 @@ The package installs both `anka` (recommended) and `ankaloop` commands.
 ### Run without installing
 
 ```bash
-uvx --prerelease allow ankaloop init
-uvx --prerelease allow ankaloop
+uvx ankaloop init
+uvx ankaloop
 ```
 
 ### Install optional Telegram support
 
 ```bash
-python -m pip install --pre "ankaloop[telegram]"
+python -m pip install "ankaloop[telegram]"
 anka telegram setup
 ```
 
@@ -289,7 +286,7 @@ The optional Telegram integration supports direct messages, groups and topics, a
 pairing, streaming responses, bounded queues, cancellation, and session switching.
 
 ```bash
-python -m pip install --pre "ankaloop[telegram]"
+python -m pip install "ankaloop[telegram]"
 anka telegram setup
 anka telegram start
 ```
@@ -329,7 +326,7 @@ Tests marked `llm` make live provider calls and require credentials. See
 
 ## Project status
 
-AnkaLoop is under active development and currently published as a release candidate. Feedback,
+AnkaLoop is under active development. Feedback,
 bug reports, documentation improvements, and focused pull requests are welcome.
 
 - [Open an issue](https://github.com/tao12345666333/ankaloop/issues)

@@ -7,26 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.14.0] — 2026-08-29
+
+Stable release of the AnkaLoop rename line introduced in 0.14.0-rc.1.
+
 ### Added
 
-- **Durable tool-boundary journal**: persistent intent and outcome events expose interrupted tool
-  calls after a crash without automatically retrying operations that may have side effects.
+- **Durable tool-boundary journal** (`#50`): persistent intent and outcome events expose
+  interrupted tool calls after a crash without automatically retrying operations that may have
+  side effects. A `/recovery` command reports unsettled operations for the current Telegram
+  session, acknowledges them durably on demand (idempotently, keeping the evidence), and scans
+  orphaned journals read-only; acknowledgement is fail-closed while a turn is still active, and
+  unreadable journals are reported as requiring attention instead of being silently skipped.
+- **Provider extra headers with OpenRouter attribution** (`#45`): chat provider profiles accept
+  `extra_headers` forwarded as default headers, and OpenRouter endpoints get default
+  `HTTP-Referer` / title / categories attribution (env-overridable, explicit config wins) so
+  AnkaLoop usage is attributed in OpenRouter rankings and analytics.
 
 ### Changed
 
-- **Unified application session lifecycle**: prompts across CLI, server, embedded client,
+- **Unified application session lifecycle** (`#44`): prompts across CLI, server, embedded client,
   Telegram, and delegated tasks now share canonical turn events, results, error envelopes,
   metrics, and queue ownership; the legacy message queue manager is deprecated.
 
 ### Fixed
 
-- **Runtime and persistence reliability**: observer failures no longer strand turns, synchronous
-  tool cancellation has a bounded settle deadline, failed memory consolidation remains retryable
-  without advancing its cursor, and session deletion shares the save lock.
-- **Configuration and authorization enforcement**: `edit_tool_enabled`, parent-scoped sub-agents,
-  explicit hook fail-open/fail-closed behavior, and the complete Telegram client contract are now
-  enforced.
-- **Skill directory paths in docs**: stale pre-rename `.amcp` paths in the skill-creator and session-cleanup SKILL.md examples and a `SkillManager` docstring aligned with the current `.ankaloop` layout (`#41`).
+- **Runtime and persistence reliability** (`#47`): observer failures no longer strand turns,
+  synchronous tool cancellation has a bounded settle deadline, failed memory consolidation
+  remains retryable without advancing its cursor, and session deletion shares the save lock.
+  Telegram delivery hardened in step: typing indicators are bounded without duplicate sends,
+  and non-retryable bad requests no longer loop through the retry path.
+- **Strict, transactional patch application** (`#48`): `apply_patch` computes every operation
+  before writing to disk so a partial failure leaves all files untouched; additions-only hunks
+  reject missing anchors instead of silently appending, and fuzzy fallback matching verifies
+  deletion lines against file content rather than trusting an arithmetic offset.
+- **Bounded MCP bridge thread joins** (`#43`): `_run_coroutine_in_thread` gives up after a
+  timeout and raises a tool execution error instead of hanging forever when a coroutine never
+  completes.
+- **Configuration and authorization enforcement** (`#44`): `edit_tool_enabled`, parent-scoped
+  sub-agents, explicit hook fail-open/fail-closed behavior, and the complete Telegram client
+  contract are now enforced.
+- **Skill directory paths in docs** (`#41`): stale pre-rename `.amcp` paths in the skill-creator
+  and session-cleanup SKILL.md examples and a `SkillManager` docstring aligned with the current
+  `.ankaloop` layout.
 
 ---
 
@@ -247,7 +272,8 @@ First release under the **AnkaLoop** name (formerly AMCP).
 
 - Initial public release: core agent engine, built-in tools (`read_file`, `grep`, `bash`, `write_file`), TOML configuration, CLI interface, and Dockerfile.
 
-[Unreleased]: https://github.com/tao12345666333/ankaloop/compare/v0.14.0-rc.1...HEAD
+[Unreleased]: https://github.com/tao12345666333/ankaloop/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/tao12345666333/ankaloop/compare/v0.14.0-rc.1...v0.14.0
 [0.14.0-rc.1]: https://github.com/tao12345666333/ankaloop/compare/v0.13.0...v0.14.0-rc.1
 [0.13.0]: https://github.com/tao12345666333/ankaloop/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/tao12345666333/ankaloop/compare/v0.11.1...v0.12.0

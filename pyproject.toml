@@ -1,6 +1,6 @@
 [project]
 name = "ankaloop"
-version = "0.14.0rc1"
+version = "0.14.0"
 description = "AnkaLoop is an out-of-the-box coding-agent runtime for terminal, server, and Telegram, with built-in tools, subagents, skills, memory, MCP, hooks, and automation."
 readme = "README.md"
 requires-python = ">=3.11"
