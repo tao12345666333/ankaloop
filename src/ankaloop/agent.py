@@ -883,12 +883,13 @@ class Agent:
             )
         self._emit_event("turn.recovery_detected", {"summary": recovery.summary()})
 
-    def get_recovery_status(self) -> JournalRecovery | None:
-        """Return the latest journal recovery scan for this session."""
-        return self._recovery_status or self._tool_journal.resolve()
+    def get_recovery_status(self) -> JournalRecovery:
+        """Resolve and return the current journal recovery status."""
+        self._recovery_status = self._tool_journal.resolve()
+        return self._recovery_status
 
     def acknowledge_recovery(self) -> dict[str, Any]:
-        """Acknowledge all open crash suspects after human review.
+        """Acknowledge all unsettled operations after human review.
 
         The journal is evidence-only and recovery is fail-closed: without
         an explicit operator decision, an interrupted turn would resurface

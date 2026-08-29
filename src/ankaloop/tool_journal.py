@@ -126,7 +126,7 @@ class JournalRecovery:
         return (
             any(not turn.acknowledged for turn in self.interrupted_turns)
             or self.has_corruption
-            or any(decision.status == "indeterminate" for decision in self.decisions)
+            or any(decision.status in {"indeterminate", "aborted_unsettled"} for decision in self.decisions)
         )
 
     def summary(self) -> dict[str, Any]:
@@ -176,14 +176,13 @@ class ToolJournal:
 
     # -- Event constructors -------------------------------------------------
 
-    def turn_started(self, turn_id: str, prompt: str) -> dict[str, Any]:
+    def turn_started(self, turn_id: str) -> dict[str, Any]:
         """Record the durable start of a turn (protocol marker event)."""
         return self._append(
             {
                 "kind": TURN_STARTED,
                 "protocol": JOURNAL_PROTOCOL,
                 "turn_id": turn_id,
-                "prompt": prompt,
             }
         )
 
@@ -276,11 +275,11 @@ class ToolJournal:
     def mark_recovery_acknowledged(self) -> dict[str, Any]:
         """Durably acknowledge every open operation as reviewed by an operator.
 
-        Fail-closed recovery never auto-retries, so open crash suspects
+        Fail-closed recovery never auto-retries, so unsettled operations
         would resurface on every startup without an explicit human
         decision.  This appends one ``recovery_acknowledged`` event naming
         the interrupted turns and open operations; the next ``resolve``
-        reports them as ``acknowledged`` instead of ``indeterminate``.
+        reports the operations as ``acknowledged``.
         Anything opened *after* the acknowledgement is still a crash
         suspect.  The read and the append are not one atomic transaction;
         a concurrent operation missed here simply stays flagged, which is
@@ -290,7 +289,9 @@ class ToolJournal:
             recovery = self.resolve()
             turn_ids = sorted(turn.turn_id for turn in recovery.interrupted_turns)
             operation_ids = sorted(
-                decision.operation_id for decision in recovery.decisions if decision.status == "indeterminate"
+                decision.operation_id
+                for decision in recovery.decisions
+                if decision.status in {"indeterminate", "aborted_unsettled"}
             )
             if turn_ids or operation_ids:
                 self._append(
@@ -512,10 +513,10 @@ def resolve_journal(events: list[dict[str, Any]]) -> JournalRecovery:
             continue
         turn_id = str(intent.get("turn_id"))
         open_operations_by_turn.setdefault(turn_id, []).append(operation_id)
-        if turn_id in turn_terminal:
+        if operation_id in acknowledged_operations:
+            status, reason = "acknowledged", "unsettled operation acknowledged by operator"
+        elif turn_id in turn_terminal:
             status, reason = "aborted_unsettled", "turn ended while operation was open"
-        elif operation_id in acknowledged_operations:
-            status, reason = "acknowledged", "crash suspect acknowledged by operator"
         else:
             status, reason = "indeterminate", "crash suspected between intent and outcome"
         decisions.append(

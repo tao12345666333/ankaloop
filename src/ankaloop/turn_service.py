@@ -70,7 +70,7 @@ class TurnService:
         # the whole turn is then missing.
         turn_id = str(self._agent.execution_context.get("turn_id", uuid.uuid4()))
         try:
-            self._agent._tool_journal.turn_started(turn_id, user_input)
+            self._agent._tool_journal.turn_started(turn_id)
         except Exception as exc:
             logger.warning("Tool journal turn_started write failed: %s", exc)
 

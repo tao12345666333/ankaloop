@@ -24,7 +24,7 @@ def journal(tmp_path: Path) -> ToolJournal:
 
 class TestToolJournalStore:
     def test_events_persist_as_jsonl(self, journal: ToolJournal, tmp_path: Path):
-        journal.turn_started("t1", "hello")
+        journal.turn_started("t1")
         journal.tool_intent("t1", "call_1", "bash", {"command": "ls"})
         journal.tool_outcome("t1", "call_1", success=True, duration_ms=12.5)
         journal.turn_committed("t1", 7)
@@ -32,6 +32,7 @@ class TestToolJournalStore:
         events = journal.read()
         assert [e["kind"] for e in events] == ["turn_started", "tool_intent", "tool_outcome", "turn_committed"]
         assert events[0]["protocol"] == JOURNAL_PROTOCOL
+        assert "prompt" not in events[0]
         assert events[1]["operation_id"] == "t1:call_1"
         assert events[1]["canonical_args_hash"] == canonical_args_hash("bash", {"command": "ls"})
         assert events[3]["revision"] == 7
@@ -42,7 +43,7 @@ class TestToolJournalStore:
 
     def test_disabled_journal_is_noop(self, tmp_path: Path):
         journal = ToolJournal(tmp_path, "sess-x", enabled=False)
-        journal.turn_started("t1", "hi")
+        journal.turn_started("t1")
         journal.tool_intent("t1", "c", "bash", {})
         journal.tool_outcome("t1", "c", success=True)
         journal.turn_committed("t1", 1)
@@ -63,13 +64,13 @@ class TestToolJournalStore:
     def test_trim_never_crosses_newest_turn_boundary(self, tmp_path: Path):
         journal = ToolJournal(tmp_path, "sess-trim", max_events=10)
         # Turn A: many settled operations (trimmable).
-        journal.turn_started("ta", "old")
+        journal.turn_started("ta")
         for i in range(12):
             journal.tool_intent("ta", f"c{i}", "grep", {"q": i})
             journal.tool_outcome("ta", f"c{i}", success=True)
         journal.turn_committed("ta", 1)
         # Turn B: one open operation (must survive trimming).
-        journal.turn_started("tb", "new")
+        journal.turn_started("tb")
         journal.tool_intent("tb", "cX", "bash", {"command": "rm -rf /tmp/x"})
 
         events = journal.read()
@@ -94,7 +95,7 @@ class TestToolJournalStore:
         """
         journal = ToolJournal(tmp_path, f"sess-pad-{padding}", max_events=10)
         # Turn A: 1 + padding * 2 + 1 settled events (trimmable).
-        journal.turn_started("ta", "old")
+        journal.turn_started("ta")
         journal.tool_intent("ta", "cA", "grep", {"q": "a"})
         for i in range(padding):
             journal.tool_intent("ta", f"cp{i}", "grep", {"q": i})
@@ -102,12 +103,12 @@ class TestToolJournalStore:
         journal.tool_outcome("ta", "cA", success=True)
         journal.turn_committed("ta", 1)
         # Turn B: committed, would end up partially retained if cut mid-turn.
-        journal.turn_started("tb", "middle")
+        journal.turn_started("tb")
         journal.tool_intent("tb", "cB", "read_file", {"path": "x"})
         journal.tool_outcome("tb", "cB", success=True)
         journal.turn_committed("tb", 2)
         # Turn C: open operation that must survive trimming.
-        journal.turn_started("tc", "new")
+        journal.turn_started("tc")
         journal.tool_intent("tc", "cC", "bash", {"command": "echo"})
 
         recovery = journal.resolve()
@@ -189,7 +190,7 @@ class TestResolverDecisions:
         assert decision.status == "aborted_unsettled"
         assert not recovery.interrupted_turns
         # Cancel with an open op still warrants attention but is not a crash.
-        assert any(d.status != "completed" for d in recovery.decisions)
+        assert recovery.requires_attention
 
     def test_orphaned_outcome_is_corruption(self):
         recovery = resolve_journal(
@@ -318,7 +319,7 @@ class TestResolverDecisions:
 class TestAcknowledgeWorkflow:
     def test_mark_recovery_acknowledged_persists_and_resolves(self, journal: ToolJournal):
         assert journal.mark_recovery_acknowledged() == {"turns": [], "operations": []}
-        journal.turn_started("t1", "do work")
+        journal.turn_started("t1")
         journal.tool_intent("t1", "c1", "bash", {"command": "echo"})
 
         assert journal.resolve().requires_attention is True
@@ -333,8 +334,20 @@ class TestAcknowledgeWorkflow:
         reopened = ToolJournal(journal.root, journal.session_id)
         assert reopened.resolve().requires_attention is False
 
+    def test_terminal_open_operation_can_be_acknowledged(self, journal: ToolJournal):
+        journal.turn_started("t1")
+        journal.tool_intent("t1", "c1", "bash", {"command": "deploy"})
+        journal.turn_cancelled("t1")
+
+        assert journal.resolve().requires_attention is True
+        assert journal.mark_recovery_acknowledged() == {"turns": [], "operations": ["t1:c1"]}
+
+        recovery = journal.resolve()
+        assert recovery.requires_attention is False
+        assert recovery.decisions[0].status == "acknowledged"
+
     def test_ack_without_open_operations_appends_nothing(self, journal: ToolJournal):
-        journal.turn_started("t1", "hi")
+        journal.turn_started("t1")
         journal.tool_intent("t1", "c1", "grep", {"q": 1})
         journal.tool_outcome("t1", "c1", success=True)
         journal.turn_committed("t1", 1)
@@ -471,7 +484,7 @@ class TestToolLoopWiring:
     @pytest.mark.asyncio
     async def test_crash_between_boundaries_is_indeterminate(self, agent, tmp_path: Path):
         journal = agent._tool_journal
-        journal.turn_started("turn-crash", "do work")
+        journal.turn_started("turn-crash")
         journal.tool_intent("turn-crash", "call_z", "bash", {"command": "curl -X POST ..."})
 
         recovery = journal.resolve()
@@ -481,6 +494,16 @@ class TestToolLoopWiring:
         assert recovery.interrupted_turns[0].turn_id == "turn-crash"
         summary = recovery.summary()
         assert summary["open_operations"][0]["tool_name"] == "bash"
+
+    def test_get_recovery_status_refreshes_after_startup(self, agent):
+        assert agent.get_recovery_status().requires_attention is False
+
+        agent._tool_journal.turn_started("turn-later")
+        agent._tool_journal.tool_intent("turn-later", "call_later", "bash", {})
+
+        recovery = agent.get_recovery_status()
+        assert recovery.requires_attention is True
+        assert recovery.decisions[0].operation_id == "turn-later:call_later"
 
 
 class TestTurnServiceWiring(TestToolLoopWiring):
