@@ -1064,6 +1064,7 @@ class TelegramBot:
         application.add_handler(CommandHandler("skills", self._handlers.handle_skills))
         application.add_handler(CommandHandler("activate", self._handlers.handle_activate))
         application.add_handler(CommandHandler("memory", self._handlers.handle_memory))
+        application.add_handler(CommandHandler("recovery", self._handlers.handle_recovery))
         application.add_handler(CommandHandler("models", self._handlers.handle_models))
         application.add_handler(CommandHandler("model", self._handlers.handle_model))
         application.add_handler(CommandHandler("config", self._handlers.handle_config))
@@ -1114,6 +1115,7 @@ class TelegramBot:
             BotCommand("start", "Initialize the bot"),
             BotCommand("help", "Show available commands"),
             BotCommand("status", "Show agent and session status"),
+            BotCommand("recovery", "Inspect unsettled tool operations"),
             BotCommand("new", "Start a new conversation session"),
             BotCommand("session", "Manage sessions (new|list|switch)"),
             BotCommand("skills", "List and manage skills"),

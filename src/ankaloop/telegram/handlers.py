@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -12,14 +14,36 @@ from typing import TYPE_CHECKING, Any
 from ..interaction import InteractionResult, route_interaction
 from ..memory import get_memory_manager
 from ..runtime import CancellationResult
+from ..tool_journal import scan_journal_files
 from .auth import AuthMiddleware
 from .config import normalize_dm_policy, normalize_group_policy
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from telegram import Update
     from telegram.ext import ContextTypes
 
     from .bot import TelegramBot
+
+
+def _format_recovery_status(status: Any, session_id: str, *, indent: str = "") -> list[str]:
+    """Render a JournalRecovery as compact operator-facing lines."""
+    if not status.requires_attention:
+        return [f"{indent}Session {session_id}: no unsettled operations."]
+    lines = [f"{indent}Session {session_id}:"]
+    open_ops = [d for d in status.decisions if d.status not in ("completed", "acknowledged")]
+    for turn in status.interrupted_turns:
+        state = "acknowledged" if turn.acknowledged else ("cancelled" if turn.terminal else "suspected crash")
+        lines.append(f"{indent}- turn {turn.turn_id}: {state}")
+    for d in open_ops:
+        lines.append(f"{indent}  - {d.tool_name} [{d.status}] {d.reason}")
+        if d.recovery_mode:
+            lines.append(f"{indent}    (recovery: {d.recovery_mode})")
+    if status.has_corruption:
+        lines.append(f"{indent}  - journal corruption detected")
+    lines.append(f"{indent}Use /recovery ack after checking side effects.")
+    return lines
 
 
 @dataclass
@@ -619,6 +643,7 @@ class TelegramHandlers:
             "/start - Initialize bot",
             "/help - Show commands",
             "/status - Agent status",
+            "/recovery [ack|all] - Journal recovery status",
             "/new - Start a new session",
             "/session new|list|switch <id> - Manage sessions",
             "/cancel - Cancel current operation",
@@ -857,6 +882,81 @@ class TelegramHandlers:
 
         if result.action == "exit":
             await self._bot.send_text(chat_id, "Exit is only available in local clients.")
+
+    async def handle_recovery(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Inspect (and optionally acknowledge) unsettled tool-journal operations.
+
+        ``/recovery`` reports the current session's recovery status;
+        ``/recovery ack`` durably acknowledges every unsettled operation
+        after the operator has checked for side effects; ``/recovery all``
+        additionally scans orphaned journals of past sessions from this
+        chat (read-only — acknowledging a live session's journal is the
+        only write path).
+        """
+        if not await self._ensure_authorized(update):
+            return
+        args = [a.lower() for a in (context.args or [])]
+        chat_id = self._chat_id(update)
+        current_session = self._session_manager.get_current_session(chat_id)
+
+        if args[:1] == ["ack"]:
+            if current_session is None:
+                await self._bot.send_text(chat_id, "No active session.")
+                return
+            acked = current_session.agent.acknowledge_recovery()
+            turns = len(acked.get("turns", []))
+            ops = len(acked.get("operations", []))
+            if turns or ops:
+                await self._bot.send_text(
+                    chat_id,
+                    f"Acknowledged {turns} interrupted turn(s), {ops} unsettled operation(s). "
+                    "Evidence stays in the journal; no more recovery alerts.",
+                )
+            else:
+                await self._bot.send_text(chat_id, "Nothing to acknowledge: no unsettled operations.")
+            return
+
+        lines: list[str] = []
+        if current_session is not None:
+            status = current_session.agent.get_recovery_status()
+            lines.extend(_format_recovery_status(status, current_session.session_id))
+        else:
+            lines.append("No active session.")
+
+        if args[:1] == ["all"]:
+            orphan_lines, orphan_count = self._scan_orphan_journals(chat_id, current_session)
+            lines.append("")
+            lines.append(f"Past sessions (this chat): {orphan_count} journal(s) with unsettled operations")
+            if orphan_count:
+                lines.extend(orphan_lines)
+
+        await self._bot.send_text(chat_id, "\n".join(lines))
+
+    def _scan_orphan_journals(self, chat_id: int, current_session: TelegramSession | None) -> tuple[list[str], int]:
+        """Resolve journals of past sessions for this chat; read-only."""
+        from ..constants import CONFIG_DIR_NAME
+
+        root = Path.home() / ".config" / CONFIG_DIR_NAME / "sessions"
+        current_id = current_session.session_id if current_session else None
+        lines: list[str] = []
+        journals_found = 0
+        try:
+            for path in scan_journal_files(root, prefix=f"telegram-{chat_id}-"):
+                session_id = path.name[: -len(".journal.jsonl")]
+                if session_id == current_id:
+                    continue
+                from ..tool_journal import resolve_journal
+
+                events: list[dict[str, Any]] = []
+                with contextlib.suppress(OSError):
+                    events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+                recovery = resolve_journal(events)
+                if recovery.requires_attention:
+                    journals_found += 1
+                    lines.extend(_format_recovery_status(recovery, session_id, indent="  "))
+        except Exception:
+            logger.warning("Orphan journal scan failed", exc_info=True)
+        return lines, journals_found
 
     async def handle_memory(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._ensure_authorized(update):

@@ -336,6 +336,23 @@ class ToolJournal:
         return record
 
 
+def scan_journal_files(root: Path, prefix: str | None = None) -> list[Path]:
+    """List journal files under ``root``, newest first, optionally by prefix.
+
+    Orphaned journals (sessions abandoned after ``/new`` or lost to a
+    restart) are never read by any live agent again; this enumeration is
+    how operator surfaces surface them.
+    """
+    root = root.expanduser()
+    if not root.is_dir():
+        return []
+    suffix = ".journal.jsonl"
+    files = [p for p in root.iterdir() if p.name.endswith(suffix) and p.is_file()]
+    if prefix:
+        files = [p for p in files if p.name[: -len(suffix)].startswith(prefix)]
+    return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
 def _fsync_dir(path: Path) -> None:
     """Best-effort directory fsync so the rename itself is durable.
 
