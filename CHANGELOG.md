@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Durable tool-boundary journal**: persistent intent and outcome events expose interrupted tool
+  calls after a crash without automatically retrying operations that may have side effects.
+
 ### Changed
 
 - **Unified application session lifecycle**: prompts across CLI, server, embedded client,

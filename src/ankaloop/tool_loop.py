@@ -24,6 +24,7 @@ from .tool_execution import (
     ToolExecutor,
     normalize_tool_calls,
 )
+from .tool_journal import canonical_args_hash, classify_recovery_mode
 from .ui import LiveUI
 
 if TYPE_CHECKING:
@@ -393,6 +394,31 @@ class ToolLoop:
                         # Track execution time
                         tool_start_time = time.time()
 
+                        # T1 boundary: preflight (permissions, hooks, argument
+                        # preparation) has passed and execution is imminent.
+                        # The intent is durable BEFORE the tool runs; a crash
+                        # after this point leaves an open operation that
+                        # recovery must treat as indeterminate.  A journal
+                        # write failure blocks execution rather than run an
+                        # unjournaled side effect.
+                        journal_turn_id = str(self._agent.execution_context.get("turn_id", "direct"))
+                        journal_args_hash = canonical_args_hash(tool_name, args)
+                        self._agent._tool_journal.tool_intent(
+                            journal_turn_id,
+                            tool_id,
+                            tool_name,
+                            args,
+                        )
+                        self._agent._emit_event(
+                            "tool.intent",
+                            {
+                                "operation_id": f"{journal_turn_id}:{tool_id}",
+                                "tool_name": tool_name,
+                                "tool_id": tool_id,
+                                "recovery_mode": classify_recovery_mode(tool_name),
+                            },
+                        )
+
                         # Execute tool
                         try:
                             tool_result = await executor.execute(tool_name, args)
@@ -463,16 +489,27 @@ class ToolLoop:
                                     "content": truncated_result,
                                 }
                             )
+                            # T2 boundary: the result is now part of the
+                            # conversation draft; journal the settlement.
+                            self._agent._settle_tool_operation(
+                                journal_turn_id,
+                                tool_id,
+                                success=bool(tool_response_data.get("success", True)),
+                                duration_ms=tool_duration_ms,
+                                args_hash=journal_args_hash,
+                            )
 
                         except asyncio.CancelledError:
                             tool_duration_ms = (time.time() - tool_start_time) * 1000
+                            # No T2 is journaled here: execution was cut short
+                            # mid-flight, so recovery keeps this intent open.
                             self._agent._emit_event(
                                 "tool.call_cancelled",
                                 {
                                     "tool_name": tool_name,
                                     "tool_id": tool_id,
                                     "success": False,
-                                    "settled": True,
+                                    "settled": False,
                                     "duration_ms": tool_duration_ms,
                                 },
                             )
@@ -503,6 +540,14 @@ class ToolLoop:
                                     "name": tool_name,
                                     "content": error_msg,
                                 }
+                            )
+                            self._agent._settle_tool_operation(
+                                journal_turn_id,
+                                tool_id,
+                                success=False,
+                                duration_ms=tool_duration_ms,
+                                error=error_msg,
+                                args_hash=journal_args_hash,
                             )
 
                 continue

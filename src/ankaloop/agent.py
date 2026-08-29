@@ -57,6 +57,7 @@ from .tool_execution import (
     ToolExecutionContext,
     ToolExecutor,
 )
+from .tool_journal import JournalRecovery, ToolJournal
 from .tool_loop import ToolLoop
 from .turn_service import TurnService
 
@@ -204,6 +205,11 @@ class Agent:
             self._session_store.root,
             self.session_id,
         )
+        self._tool_journal = ToolJournal(
+            self._session_store.root,
+            self.session_id,
+            enabled=not self.ephemeral,
+        )
         self.session_file = self._session_store.path
         self._session_state = SessionState(
             session_id=self.session_id,
@@ -251,6 +257,7 @@ class Agent:
         self.context_builder = ContextBuilder(self)
         self.tool_loop = ToolLoop(self)
         self.turn_service = TurnService(self)
+        self._recovery_status: JournalRecovery | None = None
         self._runtime = SessionRuntime(
             self.session_id,
             self._process_turn_request,
@@ -260,6 +267,7 @@ class Agent:
         # Ephemeral agents keep turn state in memory but never load a user session.
         if not self.ephemeral:
             self._load_conversation_history()
+            self._scan_recovery_status()
 
         # If this is a new session (no existing history), reset the current conversation counter
         if not self.conversation_history:
@@ -414,6 +422,7 @@ class Agent:
         """Delete the durable conversation snapshot and execution timeline."""
         self._session_store.delete()
         self._timeline_store.delete()
+        self._tool_journal.delete()
 
     def get_token_usage_summary(self) -> dict[str, Any]:
         """Return current context usage and provider-reported session totals."""
@@ -803,6 +812,95 @@ class Agent:
     async def _process_message(self, user_input: str, work_dir: Path | None, stream: bool, show_progress: bool) -> str:
         """Compatibility proxy to the transactional turn service."""
         return await self.turn_service.process_message(user_input, work_dir, stream, show_progress)
+
+    def _settle_tool_operation(
+        self,
+        turn_id: str,
+        tool_call_id: str,
+        *,
+        success: bool,
+        duration_ms: float | None = None,
+        error: str | None = None,
+        args_hash: str | None = None,
+    ) -> None:
+        """Journal the T2 settlement of one tool operation (best-effort).
+
+        Unlike the T1 intent write, a failed settlement write never fails
+        the tool call: the result already happened and the whole-turn
+        commit remains the authoritative durability point.  A missed T2
+        surfaces later as a conservatively-open operation.
+        """
+        try:
+            self._tool_journal.tool_outcome(
+                turn_id,
+                tool_call_id,
+                success=success,
+                duration_ms=duration_ms,
+                error=error,
+                args_hash=args_hash,
+            )
+        except Exception as exc:
+            logger.warning("Tool journal settlement failed for %s: %s", tool_call_id, exc)
+        self._emit_event(
+            "tool.settled",
+            {
+                "operation_id": f"{turn_id}:{tool_call_id}",
+                "tool_id": tool_call_id,
+                "success": success,
+            },
+        )
+
+    def _scan_recovery_status(self) -> None:
+        """Detect interrupted turns and open tool operations from the journal."""
+        try:
+            recovery = self._tool_journal.resolve()
+        except Exception as exc:
+            logger.warning("Tool journal scan failed for session %s: %s", self.session_id, exc)
+            return
+        self._recovery_status = recovery
+        if not recovery.requires_attention:
+            return
+        open_ops = [d for d in recovery.decisions if d.status != "completed"]
+        logger.warning(
+            "Session %s recovered with %d interrupted turn(s), %d open/corrupt tool operation(s)",
+            self.session_id,
+            len(recovery.interrupted_turns),
+            len(open_ops),
+        )
+        for turn in recovery.interrupted_turns:
+            logger.warning(
+                "Interrupted turn %s (open operations: %s)",
+                turn.turn_id,
+                ", ".join(turn.open_operations) or "none",
+            )
+        for decision in open_ops:
+            logger.warning(
+                "Open tool operation %s (%s): %s - %s",
+                decision.operation_id,
+                decision.tool_name,
+                decision.status,
+                decision.reason,
+            )
+        self._emit_event("turn.recovery_detected", {"summary": recovery.summary()})
+
+    def get_recovery_status(self) -> JournalRecovery:
+        """Resolve and return the current journal recovery status."""
+        self._recovery_status = self._tool_journal.resolve()
+        return self._recovery_status
+
+    def acknowledge_recovery(self) -> dict[str, Any]:
+        """Acknowledge all unsettled operations after human review.
+
+        The journal is evidence-only and recovery is fail-closed: without
+        an explicit operator decision, an interrupted turn would resurface
+        on every startup.  The cached scan is refreshed afterwards so the
+        acknowledged state is visible immediately.
+        """
+        if self._runtime.active_turn is not None:
+            raise BusyError("Cannot acknowledge recovery while a turn is active")
+        acked = self._tool_journal.mark_recovery_acknowledged()
+        self._recovery_status = self._tool_journal.resolve()
+        return acked
 
     async def _run_memory_review(
         self,

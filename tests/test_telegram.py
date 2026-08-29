@@ -1,7 +1,9 @@
 import asyncio
 import importlib
 import json
+import tempfile
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -728,7 +730,16 @@ def test_get_user_bot_commands_descriptions():
         mock_bot_command.side_effect = lambda cmd, desc: SimpleNamespace(command=cmd, description=desc)
         commands = bot._get_user_bot_commands()
 
-    assert [c.command for c in commands] == ["start", "help", "status", "new", "session", "skills", "models"]
+    assert [c.command for c in commands] == [
+        "start",
+        "help",
+        "status",
+        "recovery",
+        "new",
+        "session",
+        "skills",
+        "models",
+    ]
     for command in commands:
         assert command.description  # non-empty
 
@@ -1680,3 +1691,183 @@ def test_streaming_delivery_manager_respects_is_current():
 
     # finalize should also do nothing when not current
     asyncio.run(manager.finalize("Hello world!"))
+
+
+def test_handle_recovery_reports_unsettled_operations():
+    from ankaloop.tool_journal import JournalRecovery, ToolOperationDecision
+
+    async def _run():
+        handlers, fake_bot = _make_handlers(TelegramConfig(), allowed_users={42})
+        session = handlers._session_manager.create_session(123)
+        session.agent.get_recovery_status = lambda: JournalRecovery(
+            decisions=(
+                ToolOperationDecision(
+                    operation_id="t1:tc_1",
+                    tool_name="bash",
+                    status="indeterminate",
+                    reason="no outcome; suspected crash",
+                    turn_id="t1",
+                    tool_call_id="tc_1",
+                    recovery_mode="never_auto_retry",
+                ),
+            ),
+            interrupted_turns=(),
+            has_corruption=False,
+        )
+        message = _make_message(text="/recovery", user_id=42)
+        update = SimpleNamespace(
+            effective_chat=message.chat,
+            effective_user=message.from_user,
+            message=message,
+        )
+
+        await handlers.handle_recovery(update, SimpleNamespace(args=[]))
+
+        text = fake_bot.sent_texts[-1][1]
+        assert "bash" in text
+        assert "indeterminate" in text
+        assert "/recovery ack" in text
+
+    asyncio.run(_run())
+
+
+def test_handle_recovery_ack_calls_agent_and_reports_counts():
+    from ankaloop.tool_journal import ToolJournal
+
+    async def _run():
+        handlers, fake_bot = _make_handlers(TelegramConfig(), allowed_users={42})
+        session = handlers._session_manager.create_session(123)
+        journal = ToolJournal(Path(tempfile.gettempdir()), session.session_id)
+        session.agent.acknowledge_recovery = journal.mark_recovery_acknowledged
+        journal.turn_started("t1")
+        journal.tool_intent("t1", "tc_1", "bash", {"command": "ls"})
+        journal.turn_failed("t1", "boom")
+        message = _make_message(text="/recovery ack", user_id=42)
+        update = SimpleNamespace(
+            effective_chat=message.chat,
+            effective_user=message.from_user,
+            message=message,
+        )
+
+        await handlers.handle_recovery(update, SimpleNamespace(args=["ack"]))
+        await handlers.handle_recovery(update, SimpleNamespace(args=["ack"]))
+
+        texts = [t[1] for t in fake_bot.sent_texts]
+        assert "Acknowledged 0 interrupted turn(s), 1 unsettled operation(s)" in texts[0]
+        assert "Nothing to acknowledge" in texts[1]
+
+        journal.delete()
+
+    asyncio.run(_run())
+
+
+def test_handle_recovery_ack_rejects_busy_session():
+    async def _run():
+        handlers, fake_bot = _make_handlers(TelegramConfig(), allowed_users={42})
+        session = handlers._session_manager.create_session(123)
+        session.agent._busy = True
+        session.agent.acknowledge_recovery = MagicMock()
+        message = _make_message(text="/recovery ack", user_id=42)
+        update = SimpleNamespace(
+            effective_chat=message.chat,
+            effective_user=message.from_user,
+            message=message,
+        )
+
+        await handlers.handle_recovery(update, SimpleNamespace(args=["ack"]))
+
+        session.agent.acknowledge_recovery.assert_not_called()
+        assert "while the session is processing" in fake_bot.sent_texts[-1][1]
+
+    asyncio.run(_run())
+
+
+def test_handle_recovery_all_lists_orphan_journals(tmp_path):
+    import ankaloop.telegram.handlers as ankaloop_handlers
+    from ankaloop.telegram.handlers import TelegramHandlers, _format_recovery_status
+    from ankaloop.tool_journal import ToolJournal
+
+    orphan_root = tmp_path / ".config" / "ankaloop" / "sessions"
+    orphan_id = "telegram-123-orphan01"
+    journal = ToolJournal(orphan_root, orphan_id)
+    journal.turn_started("t9")
+    journal.tool_intent("t9", "tc_9", "edit_file", {"path": "x"})
+    # no terminal event, no outcome -> indeterminate
+
+    async def _run():
+        handlers, fake_bot = _make_handlers(TelegramConfig(), allowed_users={42})
+        session = handlers._session_manager.create_session(123)
+        from ankaloop.tool_journal import JournalRecovery
+
+        session.agent.get_recovery_status = lambda: JournalRecovery(
+            decisions=(), interrupted_turns=(), has_corruption=False
+        )
+        real_scan = ankaloop_handlers.scan_journal_files
+
+        def _scan(root, prefix=None):
+            return real_scan(orphan_root, prefix=prefix)
+
+        with (
+            patch("ankaloop.telegram.handlers.Path.home", return_value=tmp_path),
+            patch("ankaloop.telegram.handlers.scan_journal_files", _scan),
+        ):
+            message = _make_message(text="/recovery all", user_id=42)
+            update = SimpleNamespace(
+                effective_chat=message.chat,
+                effective_user=message.from_user,
+                message=message,
+            )
+            await handlers.handle_recovery(update, SimpleNamespace(args=["all"]))
+
+        text = fake_bot.sent_texts[-1][1]
+        assert "1 journal(s) requiring attention" in text
+        assert orphan_id in text
+        assert "edit_file" in text
+        assert "suspected crash" in text
+
+    asyncio.run(_run())
+    journal.delete()
+
+
+def test_handle_recovery_all_continues_after_malformed_journal(tmp_path):
+    import ankaloop.telegram.handlers as ankaloop_handlers
+    from ankaloop.tool_journal import JournalRecovery, ToolJournal
+
+    orphan_root = tmp_path / "sessions"
+    malformed_id = "telegram-123-malformed"
+    malformed_path = orphan_root / f"{malformed_id}.journal.jsonl"
+    orphan_root.mkdir()
+    malformed_path.write_text("{not-json}\n", encoding="utf-8")
+    valid_id = "telegram-123-valid"
+    valid = ToolJournal(orphan_root, valid_id)
+    valid.turn_started("t9")
+    valid.tool_intent("t9", "tc_9", "bash", {"command": "do-work"})
+
+    async def _run():
+        handlers, fake_bot = _make_handlers(TelegramConfig(), allowed_users={42})
+        session = handlers._session_manager.create_session(123)
+        session.agent.get_recovery_status = lambda: JournalRecovery(
+            decisions=(), interrupted_turns=(), has_corruption=False
+        )
+        real_scan = ankaloop_handlers.scan_journal_files
+
+        with patch(
+            "ankaloop.telegram.handlers.scan_journal_files",
+            side_effect=lambda root, prefix=None: real_scan(orphan_root, prefix=prefix),
+        ):
+            message = _make_message(text="/recovery all", user_id=42)
+            update = SimpleNamespace(
+                effective_chat=message.chat,
+                effective_user=message.from_user,
+                message=message,
+            )
+            await handlers.handle_recovery(update, SimpleNamespace(args=["all"]))
+
+        text = fake_bot.sent_texts[-1][1]
+        assert "2 journal(s) requiring attention" in text
+        assert malformed_id in text
+        assert "journal [unreadable]" in text
+        assert valid_id in text
+        assert "bash" in text
+
+    asyncio.run(_run())
