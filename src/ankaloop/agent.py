@@ -896,6 +896,8 @@ class Agent:
         on every startup.  The cached scan is refreshed afterwards so the
         acknowledged state is visible immediately.
         """
+        if self._runtime.active_turn is not None:
+            raise BusyError("Cannot acknowledge recovery while a turn is active")
         acked = self._tool_journal.mark_recovery_acknowledged()
         self._recovery_status = self._tool_journal.resolve()
         return acked

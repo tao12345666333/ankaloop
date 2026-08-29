@@ -505,6 +505,20 @@ class TestToolLoopWiring:
         assert recovery.requires_attention is True
         assert recovery.decisions[0].operation_id == "turn-later:call_later"
 
+    def test_recovery_cannot_be_acknowledged_during_active_turn(self, agent):
+        from unittest.mock import MagicMock
+
+        from ankaloop.agent import BusyError
+
+        agent._tool_journal.turn_started("turn-active")
+        agent._tool_journal.tool_intent("turn-active", "call_active", "bash", {})
+        agent._runtime._active_handle = MagicMock(id="turn-active")
+
+        with pytest.raises(BusyError, match="while a turn is active"):
+            agent.acknowledge_recovery()
+
+        assert agent.get_recovery_status().requires_attention is True
+
 
 class TestTurnServiceWiring(TestToolLoopWiring):
     @pytest.mark.asyncio

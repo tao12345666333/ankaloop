@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 from collections import deque
@@ -903,6 +902,12 @@ class TelegramHandlers:
             if current_session is None:
                 await self._bot.send_text(chat_id, "No active session.")
                 return
+            if current_session.agent.is_busy():
+                await self._bot.send_text(
+                    chat_id,
+                    "Cannot acknowledge recovery while the session is processing a request.",
+                )
+                return
             acked = current_session.agent.acknowledge_recovery()
             turns = len(acked.get("turns", []))
             ops = len(acked.get("operations", []))
@@ -926,7 +931,7 @@ class TelegramHandlers:
         if args[:1] == ["all"]:
             orphan_lines, orphan_count = self._scan_orphan_journals(chat_id, current_session)
             lines.append("")
-            lines.append(f"Past sessions (this chat): {orphan_count} journal(s) with unsettled operations")
+            lines.append(f"Past sessions (this chat): {orphan_count} journal(s) requiring attention")
             if orphan_count:
                 lines.extend(orphan_lines)
 
@@ -941,21 +946,38 @@ class TelegramHandlers:
         lines: list[str] = []
         journals_found = 0
         try:
-            for path in scan_journal_files(root, prefix=f"telegram-{chat_id}-"):
-                session_id = path.name[: -len(".journal.jsonl")]
-                if session_id == current_id:
-                    continue
+            paths = scan_journal_files(root, prefix=f"telegram-{chat_id}-")
+        except Exception:
+            logger.warning("Orphan journal directory scan failed", exc_info=True)
+            return ["  Journal directory scan failed; recovery status is unknown."], 1
+
+        for path in paths:
+            session_id = path.name[: -len(".journal.jsonl")]
+            if session_id == current_id:
+                continue
+            try:
                 from ..tool_journal import resolve_journal
 
-                events: list[dict[str, Any]] = []
-                with contextlib.suppress(OSError):
-                    events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+                events: list[dict[str, Any]] = [
+                    json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+                ]
+                if not all(isinstance(event, dict) for event in events):
+                    raise ValueError("journal contains a non-object event")
                 recovery = resolve_journal(events)
-                if recovery.requires_attention:
-                    journals_found += 1
-                    lines.extend(_format_recovery_status(recovery, session_id, indent="  "))
-        except Exception:
-            logger.warning("Orphan journal scan failed", exc_info=True)
+            except Exception:
+                logger.warning("Failed to resolve orphan journal %s", path, exc_info=True)
+                journals_found += 1
+                lines.extend(
+                    [
+                        f"  Session {session_id}:",
+                        "    - journal [unreadable] recovery status is unknown",
+                    ]
+                )
+                continue
+
+            if recovery.requires_attention:
+                journals_found += 1
+                lines.extend(_format_recovery_status(recovery, session_id, indent="  "))
         return lines, journals_found
 
     async def handle_memory(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

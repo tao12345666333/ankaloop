@@ -1670,6 +1670,27 @@ def test_handle_recovery_ack_calls_agent_and_reports_counts():
     asyncio.run(_run())
 
 
+def test_handle_recovery_ack_rejects_busy_session():
+    async def _run():
+        handlers, fake_bot = _make_handlers(TelegramConfig(), allowed_users={42})
+        session = handlers._session_manager.create_session(123)
+        session.agent._busy = True
+        session.agent.acknowledge_recovery = MagicMock()
+        message = _make_message(text="/recovery ack", user_id=42)
+        update = SimpleNamespace(
+            effective_chat=message.chat,
+            effective_user=message.from_user,
+            message=message,
+        )
+
+        await handlers.handle_recovery(update, SimpleNamespace(args=["ack"]))
+
+        session.agent.acknowledge_recovery.assert_not_called()
+        assert "while the session is processing" in fake_bot.sent_texts[-1][1]
+
+    asyncio.run(_run())
+
+
 def test_handle_recovery_all_lists_orphan_journals(tmp_path):
     import ankaloop.telegram.handlers as ankaloop_handlers
     from ankaloop.telegram.handlers import TelegramHandlers, _format_recovery_status
@@ -1708,11 +1729,54 @@ def test_handle_recovery_all_lists_orphan_journals(tmp_path):
             await handlers.handle_recovery(update, SimpleNamespace(args=["all"]))
 
         text = fake_bot.sent_texts[-1][1]
-        assert "journal(s) with unsettled operations" in text
-        assert "1 journal(s) with unsettled operations" in text
+        assert "1 journal(s) requiring attention" in text
         assert orphan_id in text
         assert "edit_file" in text
         assert "suspected crash" in text
 
     asyncio.run(_run())
     journal.delete()
+
+
+def test_handle_recovery_all_continues_after_malformed_journal(tmp_path):
+    import ankaloop.telegram.handlers as ankaloop_handlers
+    from ankaloop.tool_journal import JournalRecovery, ToolJournal
+
+    orphan_root = tmp_path / "sessions"
+    malformed_id = "telegram-123-malformed"
+    malformed_path = orphan_root / f"{malformed_id}.journal.jsonl"
+    orphan_root.mkdir()
+    malformed_path.write_text("{not-json}\n", encoding="utf-8")
+    valid_id = "telegram-123-valid"
+    valid = ToolJournal(orphan_root, valid_id)
+    valid.turn_started("t9")
+    valid.tool_intent("t9", "tc_9", "bash", {"command": "do-work"})
+
+    async def _run():
+        handlers, fake_bot = _make_handlers(TelegramConfig(), allowed_users={42})
+        session = handlers._session_manager.create_session(123)
+        session.agent.get_recovery_status = lambda: JournalRecovery(
+            decisions=(), interrupted_turns=(), has_corruption=False
+        )
+        real_scan = ankaloop_handlers.scan_journal_files
+
+        with patch(
+            "ankaloop.telegram.handlers.scan_journal_files",
+            side_effect=lambda root, prefix=None: real_scan(orphan_root, prefix=prefix),
+        ):
+            message = _make_message(text="/recovery all", user_id=42)
+            update = SimpleNamespace(
+                effective_chat=message.chat,
+                effective_user=message.from_user,
+                message=message,
+            )
+            await handlers.handle_recovery(update, SimpleNamespace(args=["all"]))
+
+        text = fake_bot.sent_texts[-1][1]
+        assert "2 journal(s) requiring attention" in text
+        assert malformed_id in text
+        assert "journal [unreadable]" in text
+        assert valid_id in text
+        assert "bash" in text
+
+    asyncio.run(_run())
