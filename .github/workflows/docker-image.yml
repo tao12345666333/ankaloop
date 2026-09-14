@@ -55,7 +55,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./deploy/docker/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -78,7 +78,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./deploy-gmi/Dockerfile
+          file: ./deploy/gmi/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.gmi-meta.outputs.tags }}
           labels: ${{ steps.gmi-meta.outputs.labels }}

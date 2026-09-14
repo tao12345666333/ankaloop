@@ -34,14 +34,14 @@ environment variables at runtime.
 Run from the repository root:
 
 ```bash
-docker build -f deploy-gmi/Dockerfile -t amcp-gmi:latest .
+docker build -f deploy/gmi/Dockerfile -t ankaloop-gmi:latest .
 docker run --rm -p 8080:8080 \
   -e GMI_MAAS_BASE_URL=https://api.gmi-serving.com \
   -e GMI_MAAS_API_KEY="$GMI_MAAS_API_KEY" \
-  -e GMI_MODELS="zai-org/GLM-5.2-FP8" \
+  -e GMI_MODELS="your-chat-model" \
   -e ANKA_TELEGRAM_BOT_TOKEN="$ANKA_TELEGRAM_BOT_TOKEN" \
   -e ANKA_TELEGRAM_ALLOWED_USERS="$ANKA_TELEGRAM_ALLOWED_USERS" \
-  amcp-gmi:latest
+  ankaloop-gmi:latest
 ```
 
 Verify from another terminal:
@@ -63,9 +63,9 @@ curl -fsS http://localhost:8080/api/v1/info
 - Deployment path: `GMI CE Deployment`
 - Docker image source:
   - Upload a local image, or
-  - Registry URL: `ghcr.io/tao12345666333/ankaloop:gmi-0.11.1`
+  - Registry URL: `ghcr.io/tao12345666333/ankaloop:<tag>`
 - Compute tier: `Container, 2 vCPU, 4 GB RAM`
-- Region: `IOWA IDC-1`
+- Region: pick the region offered by the GMI dashboard
 - MaaS integration: enabled
 - Models: select the GMI MaaS models AnkaLoop should be allowed to call at runtime
 
@@ -103,7 +103,7 @@ remain available.
 
 Before exposing the HTTP endpoint, confirm that the AgentBox gateway requires its generated API
 key. AnkaLoop's HTTP API does not currently enforce its own authentication. Also confirm outbound HTTPS
-access to `api.telegram.org` and `api.gmi-serving.com`, and verify in the GMI console that the 30 GiB
+access to `api.telegram.org` and `api.gmi-serving.com`, and verify in the GMI console that the
 data storage is mounted at `/workspace`; the public AgentBox documentation does not specify its
 mount path.
 

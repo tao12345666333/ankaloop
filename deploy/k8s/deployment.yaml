@@ -1,4 +1,4 @@
-# AMCP single-replica deployment.
+# AnkaLoop single-replica deployment.
 #
 # Notes:
 # - No resources.requests/limits by requirement.
@@ -6,33 +6,34 @@
 #   state simple.
 # - strategy: Recreate to keep the single writer on /workspace simple.
 # - The container command replaces the image entrypoint with a supervisor
-#   (from the amcp-k8s-scripts ConfigMap) that runs the stock gmi-entrypoint
-#   as a child. This gives e2b-style in-place self-restart: /k8s:restart (or
-#   /scripts/restart-amcp.sh) restarts the AMCP process WITHOUT stopping the
-#   container, so the pod keeps running and container-local state survives.
+#   (from the ankaloop-k8s-scripts ConfigMap) that runs the stock
+#   gmi-entrypoint as a child. This gives in-place self-restart:
+#   /k8s:restart (or /scripts/restart-ankaloop.sh) restarts the AnkaLoop
+#   process WITHOUT stopping the container, so the pod keeps running and
+#   container-local state survives.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: amcp
-  namespace: amcp
+  name: ankaloop
+  namespace: ankaloop
   labels:
-    app: amcp
+    app: ankaloop
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app: amcp
+      app: ankaloop
   template:
     metadata:
       labels:
-        app: amcp
+        app: ankaloop
     spec:
       terminationGracePeriodSeconds: 30
       containers:
-        - name: amcp
-          image: ghcr.io/tao12345666333/amcp:gmi-latest
+        - name: ankaloop
+          image: ghcr.io/tao12345666333/ankaloop:gmi-latest
           # Track the moving gmi-latest tag; pin to gmi-<version> for stability.
           imagePullPolicy: Always
           command: ["/usr/bin/tini", "--", "/scripts/supervisor.sh"]
@@ -41,12 +42,12 @@ spec:
               containerPort: 8080
           envFrom:
             - secretRef:
-                name: amcp-env
+                name: ankaloop-env
           # Optional plain env overrides (examples):
           # env:
-          #   - name: AMCP_K8S_REINSTALL_ON_RESTART
+          #   - name: ANKALOOP_K8S_REINSTALL_ON_RESTART
           #     value: "1"
-          #   - name: AMCP_GMI_REWRITE_CONFIG
+          #   - name: ANKA_GMI_REWRITE_CONFIG
           #     value: "1"
           readinessProbe:
             httpGet:
@@ -74,7 +75,7 @@ spec:
       volumes:
         - name: scripts
           configMap:
-            name: amcp-k8s-scripts
+            name: ankaloop-k8s-scripts
             defaultMode: 0755
         - name: workspace
           # No persistence by design: sessions, memory, config, and logs under

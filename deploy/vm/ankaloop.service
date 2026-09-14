@@ -1,0 +1,32 @@
+[Unit]
+Description=AnkaLoop coding-agent runtime (VM deployment with in-place self-restart)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/ankaloop/ankaloop.env
+Environment=ANKALOOP_WORK_DIR=/opt/ankaloop/data
+Environment=ANKALOOP_REPO_DIR=/opt/ankaloop/repo
+Environment=ANKALOOP_VENV_DIR=/opt/ankaloop/venv
+Environment=ANKALOOP_RUNTIME_DIR=/opt/ankaloop/run
+Environment=XDG_CONFIG_HOME=/opt/ankaloop/data/.config
+# Uncomment to make a fast-crashing child visible to systemd as a service
+# failure (see README "Notes / security"):
+# Environment=ANKALOOP_VM_MIN_UPTIME=30
+ExecStart=/usr/local/bin/ankaloop-vm-supervisor
+# In-place restart without a systemd restart:
+#   systemctl kill --signal=SIGUSR1 ankaloop.service   (or just run ankaloop-vm-restart)
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+# All AnkaLoop state (repo, venv, work dir, config, runtime control files)
+# lives under /opt/ankaloop on the root ext4 filesystem — nothing is on tmpfs,
+# so a reboot loses nothing. The supervisor creates /opt/ankaloop/data and
+# /opt/ankaloop/run on start, so ReadWritePaths only needs /opt/ankaloop.
+ReadWritePaths=/opt/ankaloop
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

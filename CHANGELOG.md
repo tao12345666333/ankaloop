@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Consolidated deployment assets under `deploy/`**: the former `deploy-k8s/`,
+  `deploy-vm/`, and `deploy-gmi/` directories now live at `deploy/k8s/`, `deploy/vm/`,
+  and `deploy/gmi/`, and the root `Dockerfile` plus compose example moved to
+  `deploy/docker/`. All deployment assets were renamed from the legacy `amcp` naming
+  to `ankaloop` (systemd unit, paths, namespaces, and deploy-time environment
+  variables), and the `docker` mode gained the same in-place self-restart
+  supervisor already used by the `vm` and `k8s` modes (`/docker:restart`).
+  Deployment examples now contain placeholders only; real values stay in
+  gitignored local files.
+
 ---
 
 ## [0.14.0] — 2026-08-29

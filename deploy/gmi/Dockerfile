@@ -1,7 +1,7 @@
 # AnkaLoop image prepared for GMI Cloud AgentBox.
 #
 # Build from the repository root:
-#   docker build -f deploy-gmi/Dockerfile -t amcp-gmi:latest .
+#   docker build -f deploy/gmi/Dockerfile -t ankaloop-gmi:latest .
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
@@ -29,7 +29,7 @@ COPY src ./src
 
 RUN uv sync --frozen --no-dev --no-editable --extra telegram
 
-COPY deploy-gmi/gmi-entrypoint.sh /usr/local/bin/gmi-entrypoint
+COPY deploy/gmi/gmi-entrypoint.sh /usr/local/bin/gmi-entrypoint
 RUN chmod +x /usr/local/bin/gmi-entrypoint \
     && mkdir -p /workspace/.config/ankaloop
 

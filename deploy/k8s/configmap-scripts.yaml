@@ -1,0 +1,176 @@
+# Scripts that give AnkaLoop in-place self-restart on Kubernetes.
+#
+# How it works (same supervisor design as deploy/vm and deploy/docker):
+#   1. supervisor.sh runs as the container's main process (under tini) and
+#      starts the stock gmi-entrypoint as a CHILD process.
+#   2. restart-ankaloop.sh (invoked by the agent via /k8s:restart, or manually
+#      with kubectl exec) touches a marker file and SIGTERMs the AnkaLoop
+#      process.
+#   3. supervisor.sh notices the marker and starts AnkaLoop again WITHOUT the
+#      container ever exiting, so the Pod keeps running (restartCount stays 0,
+#      container filesystem state such as installed packages survives).
+#   4. If AnkaLoop exits WITHOUT the marker (crash), supervisor.sh exits too
+#      and lets Kubernetes restart the container as usual.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ankaloop-k8s-scripts
+  namespace: ankaloop
+  labels:
+    app: ankaloop
+data:
+  supervisor.sh: |
+    #!/usr/bin/env sh
+    # Supervisor that keeps the Kubernetes pod/container alive across AnkaLoop
+    # restarts. AnkaLoop runs as a child of this script; when a restart is
+    # requested (marker file present after the child exits), the child is
+    # replaced without the container ever exiting.
+    set -eu
+
+    ENTRYPOINT_BIN="${ANKALOOP_K8S_ENTRYPOINT:-/usr/local/bin/gmi-entrypoint}"
+    MARKER="${ANKALOOP_K8S_RESTART_MARKER:-/tmp/ankaloop-restart-requested}"
+    PID_FILE="${ANKALOOP_K8S_PID_FILE:-/tmp/ankaloop-server.pid}"
+    WORK_DIR="${ANKA_WORK_DIR:-/workspace}"
+
+    install_restart_command() {
+        if [ "${ANKALOOP_K8S_INSTALL_RESTART_COMMAND:-1}" = "0" ]; then
+            return 0
+        fi
+        commands_dir="${WORK_DIR}/.ankaloop/commands/k8s"
+        command_file="${commands_dir}/restart.toml"
+        mkdir -p "${commands_dir}"
+        if [ -f "${command_file}" ]; then
+            echo "[ankaloop-k8s] keeping existing restart command at ${command_file}"
+            return 0
+        fi
+        cat > "${command_file}" <<'EOF_COMMAND'
+    description = "Restart AnkaLoop inside the current Kubernetes pod"
+
+    prompt = """
+    Restart AnkaLoop in this Kubernetes pod so recent changes take effect.
+
+    Use the bash tool to run:
+
+    ANKALOOP_K8S_RESTART_REASON="requested from /k8s:restart" /scripts/restart-ankaloop.sh
+
+    After the command is scheduled, tell the user that AnkaLoop is restarting in the same pod.
+    Do not delete or recreate the pod; the container keeps running.
+
+    User note:
+    {{args}}
+    """
+    EOF_COMMAND
+        echo "[ankaloop-k8s] installed restart command at ${command_file}"
+    }
+
+    child_pid=""
+    terminate_child() {
+        if [ -n "${child_pid}" ] && kill -0 "${child_pid}" 2>/dev/null; then
+            kill -TERM "${child_pid}" 2>/dev/null || true
+            wait "${child_pid}" 2>/dev/null || true
+        fi
+        rm -f "${PID_FILE}"
+        exit 143
+    }
+
+    trap terminate_child TERM INT
+    rm -f "${MARKER}" "${PID_FILE}"
+    install_restart_command
+
+    while true; do
+        echo "[ankaloop-k8s] starting AnkaLoop via ${ENTRYPOINT_BIN}"
+        "${ENTRYPOINT_BIN}" &
+        child_pid=$!
+        printf '%s\n' "${child_pid}" > "${PID_FILE}"
+
+        set +e
+        wait "${child_pid}"
+        status=$?
+        set -e
+
+        rm -f "${PID_FILE}"
+        child_pid=""
+
+        if [ -f "${MARKER}" ]; then
+            rm -f "${MARKER}"
+            echo "[ankaloop-k8s] restart requested; starting AnkaLoop again (pod stays up)"
+            continue
+        fi
+
+        echo "[ankaloop-k8s] AnkaLoop exited with status ${status} and no restart was requested"
+        echo "[ankaloop-k8s] letting the container exit so Kubernetes restarts it"
+        exit "${status}"
+    done
+
+  restart-ankaloop.sh: |
+    #!/usr/bin/env sh
+    # Request an in-place AnkaLoop restart without stopping the Kubernetes pod.
+    # Companion to supervisor.sh.
+    #
+    # Usage:
+    #   /scripts/restart-ankaloop.sh
+    #
+    # Optional environment:
+    #   ANKALOOP_K8S_RESTART_REASON         Free-form reason recorded in the log.
+    #   ANKALOOP_K8S_RESTART_DELAY          Seconds to wait before SIGTERM (default 1).
+    #   ANKALOOP_K8S_REINSTALL_ON_RESTART   Reinstall the ankaloop package with uv
+    #                                       before restart: 1 = on, 0 = off (default).
+    set -eu
+
+    DELAY_SECONDS="${ANKALOOP_K8S_RESTART_DELAY:-1}"
+    REINSTALL="${ANKALOOP_K8S_REINSTALL_ON_RESTART:-0}"
+    LOG_DIR="${ANKA_LOG_DIR:-/workspace/logs}"
+    LOG_FILE="${LOG_DIR}/ankaloop-restart.log"
+    MARKER="${ANKALOOP_K8S_RESTART_MARKER:-/tmp/ankaloop-restart-requested}"
+    PID_FILE="${ANKALOOP_K8S_PID_FILE:-/tmp/ankaloop-server.pid}"
+
+    mkdir -p "${LOG_DIR}"
+
+    {
+        echo "[ankaloop-k8s] restart requested at $(date -Is)"
+        if [ -n "${ANKALOOP_K8S_RESTART_REASON:-}" ]; then
+            echo "[ankaloop-k8s] reason: ${ANKALOOP_K8S_RESTART_REASON}"
+        fi
+
+        if [ "${REINSTALL}" != "0" ]; then
+            cd /app
+            UV_BIN="${UV_BIN:-$(command -v uv || true)}"
+            if [ -z "${UV_BIN}" ]; then
+                echo "[ankaloop-k8s] uv not found; cannot reinstall updated code" >&2
+                exit 1
+            fi
+            echo "[ankaloop-k8s] reinstalling ankaloop package before restart"
+            "${UV_BIN}" sync --frozen --extra telegram --no-dev --no-editable \
+                --reinstall-package ankaloop
+        else
+            echo "[ankaloop-k8s] skipping package reinstall"
+        fi
+
+        touch "${MARKER}"
+
+        if [ "${DELAY_SECONDS}" != "0" ]; then
+            sleep "${DELAY_SECONDS}"
+        fi
+
+        if [ -f "${PID_FILE}" ]; then
+            ANKALOOP_PID="$(cat "${PID_FILE}")"
+            if [ -n "${ANKALOOP_PID}" ] && kill -0 "${ANKALOOP_PID}" 2>/dev/null; then
+                echo "[ankaloop-k8s] stopping AnkaLoop pid=${ANKALOOP_PID} (pod stays up)"
+                kill -TERM "${ANKALOOP_PID}"
+                exit 0
+            fi
+        fi
+
+        # The gmi image has no procps (pkill), so scan /proc as a fallback.
+        echo "[ankaloop-k8s] pid file missing or stale; falling back to /proc scan"
+        for proc in /proc/[0-9]*; do
+            pid="${proc#/proc/}"
+            if [ "${pid}" = "$$" ]; then
+                continue
+            fi
+            if tr '\0' ' ' < "${proc}/cmdline" 2>/dev/null | grep -q 'gmi-entrypoint\|anka serve'; then
+                echo "[ankaloop-k8s] stopping pid=${pid} (pod stays up)"
+                kill -TERM "${pid}" 2>/dev/null || true
+            fi
+        done
+    } >> "${LOG_FILE}" 2>&1

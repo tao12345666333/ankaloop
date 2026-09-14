@@ -159,9 +159,10 @@ e2b/
 e2b.toml
 
 # Secrets and deploy env files (never commit)
-deploy-k8s/secret.yaml
-deploy-vm/amcp.env
-deploy-vm/*.local.env
+deploy/k8s/secret.yaml
+deploy/vm/ankaloop.env
+deploy/vm/*.local.env
+blaxel
 
 # Test / local config guard (NEVER commit real secrets or test configs)
 # Test AMCP configs live under /opt/amcp/data/amcp-test (outside this repo),
