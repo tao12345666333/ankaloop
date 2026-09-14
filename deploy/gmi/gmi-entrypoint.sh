@@ -34,7 +34,7 @@ esac
 export ANKA_CHAT_MODEL="$MODEL"
 
 CONFIG_ROOT="${XDG_CONFIG_HOME:-/root/.config}"
-CONFIG_DIR="$CONFIG_ROOT/amcp"
+CONFIG_DIR="$CONFIG_ROOT/ankaloop"
 CONFIG_FILE="$CONFIG_DIR/config.toml"
 mkdir -p "$CONFIG_DIR" "$WORK_DIR"
 

@@ -319,8 +319,8 @@ Tests marked `llm` make live provider calls and require credentials. See
 ## Deployment
 
 - Run the FastAPI server directly or package it with the included Dockerfile.
-- Use the provided examples for [Kubernetes](deploy-k8s/), [VM deployments](deploy-vm/), and
-  [GMI Cloud](deploy-gmi/).
+- Use the provided examples for [Docker](deploy/docker/), [Kubernetes](deploy/k8s/),
+  [VM deployments](deploy/vm/), and [GMI Cloud](deploy/gmi/).
 - [Deploy AnkaLoop on GMI Cloud](https://console.gmicloud.ai/user-console/ie/agentbox/browse-agents/ankaloop)
   or use the maintainer's optional [referral link](https://console.gmicloud.ai/ref/KP3NWZV4).
 

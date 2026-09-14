@@ -1,31 +1,28 @@
-# AnkaLoop Server — Dockerfile
+# AnkaLoop Server — Dockerfile (with in-place self-restart supervisor)
 #
-# Build:
-#   docker build -t ankaloop .
+# Build (from the repository root):
+#   docker build -f deploy/docker/Dockerfile -t ankaloop .
 #
-# Run (interactive CLI inside the container):
+# Run (server on loopback, safe default, no auth required):
 #   docker run -it ankaloop
-#
-# Run server on loopback (safe default, no auth required):
-#   docker run -it ankaloop serve
 #
 # Run server exposed to the host network with authentication (via env vars):
 #   docker run -p 8080:8080 \
 #       -e ANKA_HOST=0.0.0.0 -e ANKA_API_KEY=your-secret \
-#       ankaloop serve
+#       ankaloop
 #
 # Run server exposed to the host network with authentication (via config file):
-#   docker run -p 8080:8080 -v ./config.toml:/root/.config/amcp/config.toml \
-#       ankaloop serve --host 0.0.0.0
-#
-# With scheduler & reactor:
-#   docker run -p 8080:8080 \
-#       -e ANKA_HOST=0.0.0.0 -e ANKA_API_KEY=your-secret \
-#       ankaloop serve --scheduler --reactor
+#   docker run -p 8080:8080 -v ./config.toml:/root/.config/ankaloop/config.toml \
+#       ankaloop
 #
 # NOTE: A non-loopback --host (e.g. 0.0.0.0) requires authentication.
 #       Use --api-key, ANKA_API_KEY env var, or [server.auth] in config.toml.
 #       Custom ports via ANKA_PORT are picked up by the HEALTHCHECK automatically.
+#
+# The container runs a supervisor that keeps AnkaLoop as a child process, so
+# the agent can restart itself in place (/docker:restart or
+# /usr/local/bin/restart-ankaloop) WITHOUT the container exiting — container
+# filesystem state survives, matching the deploy/vm and deploy/k8s designs.
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
@@ -54,8 +51,13 @@ COPY src ./src
 # Install Python dependencies
 RUN uv sync --frozen --no-dev --no-editable
 
+# Install the in-place self-restart supervisor + restart helper
+COPY deploy/docker/supervisor.sh /usr/local/bin/ankaloop-docker-supervisor
+COPY deploy/docker/restart-ankaloop.sh /usr/local/bin/restart-ankaloop
+RUN chmod +x /usr/local/bin/ankaloop-docker-supervisor /usr/local/bin/restart-ankaloop
+
 # Create runtime directories
-RUN mkdir -p /root/.config/amcp /workspace
+RUN mkdir -p /root/.config/ankaloop /workspace
 
 WORKDIR /workspace
 
@@ -65,5 +67,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/bin/tini", "--", "anka"]
-CMD ["serve"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/ankaloop-docker-supervisor"]

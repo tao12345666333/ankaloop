@@ -1,6 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: amcp
-  labels:
-    app.kubernetes.io/name: amcp

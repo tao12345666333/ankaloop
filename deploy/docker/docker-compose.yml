@@ -1,0 +1,42 @@
+# AnkaLoop — Docker Compose example
+#
+# Start (from the repository root):
+#   docker compose -f deploy/docker/docker-compose.yml up -d
+#
+# Logs:
+#   docker compose -f deploy/docker/docker-compose.yml logs -f
+#
+# With config:
+#   Place your config.toml in this directory and it will be mounted.
+#
+# The image includes the in-place self-restart supervisor: the agent can run
+# /docker:restart (or /usr/local/bin/restart-ankaloop) to restart AnkaLoop
+# WITHOUT the container exiting. Container-local state survives the restart.
+
+services:
+  ankaloop:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    # No published port by default: AnkaLoop's usual drivers (Telegram long
+    # polling, agent-driven self-restart) are outbound-only, and the API is
+    # reachable via `docker exec`. To reach the HTTP API from the host,
+    # uncomment the mapping AND set ANKA_HOST=0.0.0.0 + ANKA_API_KEY below
+    # (a non-loopback bind requires authentication).
+    # ports:
+    #   - "8080:8080"
+    volumes:
+      - ./config.toml:/root/.config/ankaloop/config.toml:ro
+      - ankaloop-data:/root/.config/ankaloop
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Optional: Telegram polling bot (outbound only, no inbound port).
+      # - ANKA_TELEGRAM_BOT_TOKEN=123456:replace-me
+      # - ANKA_TELEGRAM_ALLOWED_USERS=123456789
+      # Required together with the ports mapping above:
+      # - ANKA_HOST=0.0.0.0
+      # - ANKA_API_KEY=replace-me
+    restart: unless-stopped
+
+volumes:
+  ankaloop-data:

@@ -3,9 +3,9 @@
   "deployment_path": "GMI CE Deployment",
   "docker": {
     "build_context": ".",
-    "dockerfile": "deploy-gmi/Dockerfile",
-    "local_image": "amcp-gmi:latest",
-    "build_command": "docker build -f deploy-gmi/Dockerfile -t amcp-gmi:latest .",
+    "dockerfile": "deploy/gmi/Dockerfile",
+    "local_image": "ankaloop-gmi:latest",
+    "build_command": "docker build -f deploy/gmi/Dockerfile -t ankaloop-gmi:latest .",
     "registry_url": "ghcr.io/tao12345666333/ankaloop:gmi-0.11.1"
   },
   "infrastructure": {

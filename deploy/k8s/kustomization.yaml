@@ -1,5 +1,5 @@
-# Allows `kubectl apply -k deploy-k8s/`.
-# The amcp-env Secret is intentionally NOT included here; create it from
+# Allows `kubectl apply -k deploy/k8s/`.
+# The ankaloop-env Secret is intentionally NOT included here; create it from
 # secret.example.yaml (copied to secret.yaml) or with kubectl create secret.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

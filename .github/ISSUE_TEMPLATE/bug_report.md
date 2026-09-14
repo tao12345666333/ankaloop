@@ -23,7 +23,7 @@ What actually happened.
 ## Environment
 - OS: [e.g. Ubuntu 22.04]
 - Python Version: [e.g. 3.11.5]
-- AMCP Version: [e.g. 0.1.0]
+- AnkaLoop Version: [e.g. 0.14.0]
 
 ## Additional Context
 Add any other context about the problem here.
