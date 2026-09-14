@@ -154,7 +154,6 @@ Thumbs.db
 *.seed
 *.pid.lock
 .ankaloop/memory/
-.amcp/memory/
 e2b/
 e2b.toml
 
@@ -165,9 +164,8 @@ deploy/vm/*.local.env
 blaxel
 
 # Test / local config guard (NEVER commit real secrets or test configs)
-# Test AMCP configs live under /opt/amcp/data/amcp-test (outside this repo),
-# but guard against accidental local copies here too.
-amcp-test*.toml
+# Test AnkaLoop configs live under /opt/ankaloop/data/anka-test (outside this
+# repo), but guard against accidental local copies here too.
 anka-test*.toml
 *.local.toml
 *.local.env
