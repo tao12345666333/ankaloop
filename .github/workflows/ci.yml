@@ -26,17 +26,16 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ruff mypy
+          pip install -e ".[dev,telegram]"
 
       - name: Lint with ruff check
-        run: ruff check src/
+        run: ruff check src/ tests/
 
       - name: Lint with ruff format
-        run: ruff format --check src/
+        run: ruff format --check src/ tests/
 
       - name: Type check with mypy
         run: mypy src/ankaloop --ignore-missing-imports
-        continue-on-error: true
 
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -70,7 +69,7 @@ jobs:
           pip install -e ".[dev,telegram]"
 
       - name: Run tests with pytest
-        run: pytest --cov-report=xml -m "not llm"
+        run: pytest --cov=ankaloop --cov-branch --cov-report=xml -m "not llm"
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

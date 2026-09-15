@@ -7,7 +7,7 @@ test:
 	pytest
 
 test-cov:
-	pytest --cov --cov-report=html --cov-report=term
+	pytest --cov=ankaloop --cov-branch --cov-report=html --cov-report=term
 
 lint:
 	ruff check src/ tests/

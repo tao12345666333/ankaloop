@@ -1,6 +1,6 @@
 # AnkaLoop Examples
 
-This directory contains ready-to-use examples that demonstrate the various capabilities of AnkaLoop (Agent Model Context Protocol). These examples are designed to help you get started quickly and understand how to leverage different features of the system.
+This directory contains ready-to-use examples that demonstrate the various capabilities of AnkaLoop. These examples are designed to help you get started quickly and understand how to leverage different features of the system.
 
 ## 📁 Directory Structure
 

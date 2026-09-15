@@ -10,7 +10,7 @@ mode with the development and Telegram extras so the full test suite can be coll
 
 ```bash
 git clone https://github.com/tao12345666333/ankaloop.git
-cd anka
+cd ankaloop
 
 # Recommended: create and sync a uv-managed environment
 uv sync --extra dev --extra telegram

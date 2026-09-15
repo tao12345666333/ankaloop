@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Tightened CI quality gates**: the lint job now installs the project
+  (`pip install -e ".[dev,telegram]"`) so mypy type-checks against real dependencies and
+  runs as a blocking check (the previous `continue-on-error` let type errors through), and
+  ruff lint/format now cover `tests/` as well as `src/`, matching the Makefile. Coverage
+  flags moved out of the default `pytest` addopts into CI and `make test-cov`, so plain
+  local test runs no longer pay for coverage collection.
 - **Consolidated deployment assets under `deploy/`**: the former `deploy-k8s/`,
   `deploy-vm/`, and `deploy-gmi/` directories now live at `deploy/k8s/`, `deploy/vm/`,
   and `deploy/gmi/`, and the root `Dockerfile` plus compose example moved to
@@ -18,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supervisor already used by the `vm` and `k8s` modes (`/docker:restart`).
   Deployment examples now contain placeholders only; real values stay in
   gitignored local files.
+
+### Fixed
+
+- Removed the stale "(Agent Model Context Protocol)" expansion from `examples/README.md`
+  and corrected the post-clone directory name (`cd ankaloop`) in `CONTRIBUTING.md`.
 
 ---
 
