@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.15.0] — 2026-09-18
+
 ### Changed
 
 - **Tightened CI quality gates**: the lint job now installs the project
@@ -27,8 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Removed the stale "(Agent Model Context Protocol)" expansion from `examples/README.md`
-  and corrected the post-clone directory name (`cd ankaloop`) in `CONTRIBUTING.md`.
+- Removed the stale "(Agent Model Context Protocol)" expansion from `examples/README.md`,
+  corrected the post-clone directory name (`cd ankaloop`) in `CONTRIBUTING.md`, and updated
+  the bug report template to ask for the AnkaLoop version instead of "AMCP Version".
 
 ---
 
@@ -295,7 +300,8 @@ First release under the **AnkaLoop** name (formerly AMCP).
 
 - Initial public release: core agent engine, built-in tools (`read_file`, `grep`, `bash`, `write_file`), TOML configuration, CLI interface, and Dockerfile.
 
-[Unreleased]: https://github.com/tao12345666333/ankaloop/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/tao12345666333/ankaloop/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/tao12345666333/ankaloop/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/tao12345666333/ankaloop/compare/v0.14.0-rc.1...v0.14.0
 [0.14.0-rc.1]: https://github.com/tao12345666333/ankaloop/compare/v0.13.0...v0.14.0-rc.1
 [0.13.0]: https://github.com/tao12345666333/ankaloop/compare/v0.12.0...v0.13.0
