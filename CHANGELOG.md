@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Fixed
 
-- **`ANKA_CHAT_MODEL` environment variable**: the chat model can now be set via the
-  environment when the config file does not specify one (precedence: config `chat.model`
-  > env > default), matching the existing `ANKA_OPENAI_BASE` / `OPENAI_API_KEY` fallbacks.
-  This also makes the GMI AgentBox entrypoint's model export effective again.
+- **`ANKA_CHAT_MODEL` is honored again**: the VM and Docker deployment modes pass the
+  chat model through this variable (systemd `EnvironmentFile` / container env) and expect
+  AnkaLoop to read it, but the reader was removed together with the legacy REPL chat path,
+  so both modes silently fell back to the default model. `create_llm_client` now resolves
+  the model as config `chat.model` > env > default, matching the existing
+  `ANKA_OPENAI_BASE` / `OPENAI_API_KEY` fallbacks. (GMI AgentBox and Kubernetes
+  deployments were unaffected: `gmi-entrypoint.sh` writes the model into the generated
+  `config.toml`.)
 
 ---
 
