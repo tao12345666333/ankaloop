@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ANKA_CHAT_MODEL` environment variable**: the chat model can now be set via the
+  environment when the config file does not specify one (precedence: config `chat.model`
+  > env > default), matching the existing `ANKA_OPENAI_BASE` / `OPENAI_API_KEY` fallbacks.
+  This also makes the GMI AgentBox entrypoint's model export effective again.
+
 ---
 
 ## [0.15.0] — 2026-09-18

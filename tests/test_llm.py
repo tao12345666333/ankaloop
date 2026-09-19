@@ -141,6 +141,34 @@ class TestCreateLLMClient:
         client = create_llm_client(None)
         assert isinstance(client, OpenAIClient)
 
+    def test_model_from_env_when_config_is_none(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setenv("ANKA_CHAT_MODEL", "env-model")
+
+        client = create_llm_client(None)
+        assert client.model == "env-model"
+
+    def test_model_from_env_when_config_omits_model(self, monkeypatch):
+        monkeypatch.setenv("ANKA_CHAT_MODEL", "env-model")
+        cfg = ChatConfig(api_key="test-key")
+
+        client = create_llm_client(cfg)
+        assert client.model == "env-model"
+
+    def test_config_model_takes_precedence_over_env(self, monkeypatch):
+        monkeypatch.setenv("ANKA_CHAT_MODEL", "env-model")
+        cfg = ChatConfig(model="cfg-model", api_key="test-key")
+
+        client = create_llm_client(cfg)
+        assert client.model == "cfg-model"
+
+    def test_model_default_when_no_config_or_env(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.delenv("ANKA_CHAT_MODEL", raising=False)
+
+        client = create_llm_client(None)
+        assert client.model == "gpt-5.5"
+
 
 class TestOpenAIClient:
     def test_client_creation(self):
