@@ -998,7 +998,7 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
     - "openai_responses": OpenAI Responses API
     """
     api_type = (cfg.api_type if cfg else None) or os.environ.get("ANKA_API_TYPE", "openai")
-    model = (cfg.model if cfg else None) or "gpt-5.5"
+    model = (cfg.model if cfg else None) or os.environ.get("ANKA_CHAT_MODEL") or "gpt-5.5"
     model_config = cfg.model_config if cfg else None
     if model_config and model_config.model_id and model_config.model_id != model:
         model_config = None
