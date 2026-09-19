@@ -1204,13 +1204,13 @@ class Agent:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a text file from the local workspace. Returns the full file content with line numbers. If no ranges specified, reads the entire file. CRITICAL: You MUST provide a path to a specific FILE, not a directory. Use relative paths from current working directory (e.g., 'src/ankaloop/readfile.py', 'README.md'), NOT absolute paths starting with '/'. COMMON FILES: 'src/ankaloop/readfile.py', 'src/ankaloop/rg.py', 'src/ankaloop/cli.py', 'src/ankaloop/chat.py', 'README.md', 'pyproject.toml'. NEVER use just 'src/ankaloop' - it's a directory, not a file. IMPORTANT: When you get the file content, analyze it and provide your response - don't call the tool again unless you need additional different files.",
+                "description": "Read a text file from the local workspace. Returns the full file content with line numbers. If no ranges specified, reads the entire file. CRITICAL: You MUST provide a path to a specific FILE, not a directory. Use relative paths from current working directory (e.g., 'src/ankaloop/readfile.py', 'README.md'), NOT absolute paths starting with '/'. COMMON FILES: 'src/ankaloop/readfile.py', 'src/ankaloop/rg.py', 'src/ankaloop/cli.py', 'README.md', 'pyproject.toml'. NEVER use just 'src/ankaloop' - it's a directory, not a file. IMPORTANT: When you get the file content, analyze it and provide your response - don't call the tool again unless you need additional different files.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Path to a specific FILE (not directory). Use relative paths like 'src/ankaloop/readfile.py', NEVER directories like 'src/ankaloop'. COMMON FILES: 'src/ankaloop/readfile.py', 'src/ankaloop/rg.py', 'src/ankaloop/cli.py', 'src/ankaloop/chat.py', 'README.md', 'pyproject.toml'. Always include the file extension (.py, .md, .toml, etc).",
+                            "description": "Path to a specific FILE (not directory). Use relative paths like 'src/ankaloop/readfile.py', NEVER directories like 'src/ankaloop'. COMMON FILES: 'src/ankaloop/readfile.py', 'src/ankaloop/rg.py', 'src/ankaloop/cli.py', 'README.md', 'pyproject.toml'. Always include the file extension (.py, .md, .toml, etc).",
                         },
                         "ranges": {
                             "type": "array",
