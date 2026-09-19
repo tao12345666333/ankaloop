@@ -6,7 +6,7 @@
     "dockerfile": "deploy/gmi/Dockerfile",
     "local_image": "ankaloop-gmi:latest",
     "build_command": "docker build -f deploy/gmi/Dockerfile -t ankaloop-gmi:latest .",
-    "registry_url": "ghcr.io/tao12345666333/ankaloop:gmi-0.11.1"
+    "registry_url": "ghcr.io/tao12345666333/ankaloop:gmi-0.15.0"
   },
   "infrastructure": {
     "compute_tier": "Container, 2 vCPU, 4 GB RAM, 10 GiB ephemeral storage, 30 GiB data storage",
