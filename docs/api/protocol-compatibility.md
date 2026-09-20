@@ -10,7 +10,7 @@ This document describes how AnkaLoop handles different protocols and ensures con
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        AnkaLoop Protocol Layer                               │
+│                        AnkaLoop Protocol Layer                           │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │   ┌────────────────┐                                                    │
