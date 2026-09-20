@@ -150,14 +150,14 @@ def run_e2e(
     keep_artifacts: bool,
 ) -> E2EResult:
     base_url = f"http://{host}:{port}"
-    work_dir = Path(tempfile.mkdtemp(prefix="amcp-e2e-serve-skill-"))
+    work_dir = Path(tempfile.mkdtemp(prefix="ankaloop-e2e-serve-skill-"))
     serve_log = work_dir / "serve.log"
 
     run_id = uuid.uuid4().hex[:10]
     skill_name = f"e2e-autoskill-{run_id}"
     trigger_token = f"E2E_PING_{run_id}"
     expected_output = f"E2E_PONG_{run_id}"
-    skill_dir = Path.home() / ".config" / "amcp" / "skills" / skill_name
+    skill_dir = Path.home() / ".config" / "ankaloop" / "skills" / skill_name
     skill_md = skill_dir / "SKILL.md"
     ping_script = skill_dir / "scripts" / "ping.py"
 
@@ -205,7 +205,7 @@ def run_e2e(
         create_prompt = f"""
 Create a new AnkaLoop skill via built-in skill-creator workflow.
 - Name: {skill_name}
-- Location: ~/.config/amcp/skills/{skill_name}
+- Location: ~/.config/ankaloop/skills/{skill_name}
 - You MUST read skill-creator SKILL.md first.
 - Use init_skill.py to scaffold the skill.
 - Add scripts/ping.py that prints exactly: {expected_output}

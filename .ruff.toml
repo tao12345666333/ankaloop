@@ -27,7 +27,7 @@ ignore = [
 "tests/*" = ["F401", "F811"]
 
 [lint.isort]
-known-first-party = ["amcp"]
+known-first-party = ["ankaloop"]
 
 [format]
 quote-style = "double"

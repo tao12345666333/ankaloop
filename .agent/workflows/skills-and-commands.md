@@ -4,18 +4,18 @@ description: How to create and use custom skills and slash commands
 
 # Creating Skills and Slash Commands
 
-This workflow explains how to create custom skills and slash commands for AMCP.
+This workflow explains how to create custom skills and slash commands for AnkaLoop.
 
 ## Creating a Skill
 
 1. Create a skill directory:
    ```bash
-   mkdir -p ~/.config/amcp/skills/my-skill
+   mkdir -p ~/.config/ankaloop/skills/my-skill
    ```
 
 2. Create a SKILL.md file with YAML frontmatter:
    ```bash
-   cat > ~/.config/amcp/skills/my-skill/SKILL.md << 'EOF'
+   cat > ~/.config/ankaloop/skills/my-skill/SKILL.md << 'EOF'
    ---
    name: my-skill
    description: My custom skill description
@@ -27,7 +27,7 @@ This workflow explains how to create custom skills and slash commands for AMCP.
    EOF
    ```
 
-3. In AMCP CLI, activate the skill:
+3. In AnkaLoop CLI, activate the skill:
    ```
    /skills activate my-skill
    ```
@@ -36,14 +36,14 @@ This workflow explains how to create custom skills and slash commands for AMCP.
 
 1. Create a command file:
    ```bash
-   mkdir -p ~/.config/amcp/commands
-   cat > ~/.config/amcp/commands/mycommand.toml << 'EOF'
+   mkdir -p ~/.config/ankaloop/commands
+   cat > ~/.config/ankaloop/commands/mycommand.toml << 'EOF'
    description = "My custom command"
    prompt = "Your prompt template here with {{args}} placeholder"
    EOF
    ```
 
-2. Use it in AMCP CLI:
+2. Use it in AnkaLoop CLI:
    ```
    /mycommand your arguments here
    ```

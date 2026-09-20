@@ -1,10 +1,10 @@
-# AMCP API Reference
+# AnkaLoop API Reference
 
 > **Version**: 1.0.0
 > **Base URL**: `http://localhost:8080/api/v1`
 > **OpenAPI Spec**: `/openapi.json`
 
-This document provides comprehensive API documentation for the AMCP Server HTTP REST API, WebSocket API, and SSE event streams.
+This document provides comprehensive API documentation for the AnkaLoop Server HTTP REST API, WebSocket API, and SSE event streams.
 
 ## Table of Contents
 
@@ -54,7 +54,7 @@ Get server information and capabilities.
 **Response** `200 OK`:
 ```json
 {
-  "name": "amcp-server",
+  "name": "ankaloop-server",
   "version": "0.8.0",
   "protocol_version": "1.0",
   "capabilities": ["sessions", "streaming", "websocket", "sse", "tools", "agents"],
@@ -307,7 +307,7 @@ List available agents.
   "agents": [
     {
       "name": "default",
-      "description": "Default AMCP agent with full capabilities",
+      "description": "Default AnkaLoop agent with full capabilities",
       "mode": "primary",
       "tools_count": 15
     },
@@ -330,7 +330,7 @@ Get details for a specific agent.
 ```json
 {
   "name": "default",
-  "description": "Default AMCP agent with full capabilities",
+  "description": "Default AnkaLoop agent with full capabilities",
   "mode": "primary",
   "tools_count": 15,
   "system_prompt": "You are a helpful coding assistant...",
@@ -580,9 +580,9 @@ All errors follow this format:
 ### Python SDK
 
 ```python
-from ankaloop.client import AMCPClient
+from ankaloop.client import AnkaloopClient
 
-async with AMCPClient("http://localhost:8080") as client:
+async with AnkaloopClient("http://localhost:8080") as client:
     # Create session
     session = await client.create_session(cwd="/my/project")
 
@@ -597,7 +597,7 @@ async with AMCPClient("http://localhost:8080") as client:
 ### TypeScript/JavaScript
 
 ```typescript
-import type { paths, Session } from './types/amcp-api';
+import type { paths, Session } from './types/ankaloop-api';
 
 const response = await fetch('http://localhost:8080/api/v1/sessions', {
   method: 'POST',
@@ -656,4 +656,4 @@ allow_methods = ["*"]
 allow_headers = ["*"]
 ```
 
-To customize, edit `~/.config/amcp/config.toml`.
+To customize, edit `~/.config/ankaloop/config.toml`.

@@ -20,7 +20,7 @@ anka --once "summarize this repository"
 
 `ankaloop` is the package name. Installation provides the `anka` command (recommended) and
 the `ankaloop` command. The initialization wizard stores configuration in
-`~/.config/amcp/config.toml`. Alternatively, run without installing via `uvx ankaloop init`
+`~/.config/ankaloop/config.toml`. Alternatively, run without installing via `uvx ankaloop init`
 and `uvx ankaloop`.
 
 Telegram support is optional: `python -m pip install "ankaloop[telegram]"`. Provider support,
@@ -31,7 +31,7 @@ including Anthropic, is included in the base package; do not install an `anthrop
 ### 1. Clone and Setup
 ```bash
 git clone https://github.com/tao12345666333/ankaloop.git
-cd amcp
+cd ankaloop
 
 # Install with development dependencies
 pip install -e ".[dev]"

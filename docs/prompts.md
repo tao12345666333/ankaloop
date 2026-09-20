@@ -1,6 +1,6 @@
-# AMCP Prompt Templates System
+# AnkaLoop Prompt Templates System
 
-AMCP 使用模板化的 system prompt 系统，支持：
+AnkaLoop 使用模板化的 system prompt 系统，支持：
 
 - **结构化的 Prompt 区块**：`<critical_rules>`, `<workflow>`, `<editing_files>` 等
 - **模型特定优化**：为 Claude 提供专门的 prompt（扩展思考指导）

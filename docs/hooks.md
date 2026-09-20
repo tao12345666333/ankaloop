@@ -1,6 +1,6 @@
-# AMCP Hooks System
+# AnkaLoop Hooks System
 
-The AMCP Hooks system allows you to extend and customize agent behavior through external commands or Python scripts. Inspired by [Claude Code's hooks system](https://code.claude.com/docs/en/hooks), it provides a flexible way to:
+The AnkaLoop Hooks system allows you to extend and customize agent behavior through external commands or Python scripts. Inspired by [Claude Code's hooks system](https://code.claude.com/docs/en/hooks), it provides a flexible way to:
 
 - Validate and modify tool inputs before execution
 - Process and modify tool outputs after execution
@@ -12,8 +12,8 @@ The AMCP Hooks system allows you to extend and customize agent behavior through 
 
 Hooks are configured via TOML or JSON files:
 
-- **Project-level**: `.amcp/hooks.toml` or `.amcp/hooks.json`
-- **User-level**: `~/.config/amcp/hooks.toml` or `~/.config/amcp/hooks.json`
+- **Project-level**: `.ankaloop/hooks.toml` or `.ankaloop/hooks.json`
+- **User-level**: `~/.config/ankaloop/hooks.toml` or `~/.config/ankaloop/hooks.json`
 
 Project-level hooks override user-level hooks.
 
@@ -237,7 +237,7 @@ log_entry = {
     "tool_input": input_data.get("tool_input"),
 }
 
-log_file = Path("/tmp/amcp_tool_calls.log")
+log_file = Path("/tmp/ankaloop_tool_calls.log")
 with open(log_file, "a") as f:
     f.write(json.dumps(log_entry) + "\n")
 

@@ -1,6 +1,6 @@
 # Skills and Slash Commands
 
-AMCP supports two powerful extension mechanisms inspired by Gemini CLI:
+AnkaLoop supports two powerful extension mechanisms inspired by Gemini CLI:
 
 1. **Skills** - Reusable knowledge or behavior definitions that can be activated to provide specialized capabilities
 2. **Slash Commands** - Custom command shortcuts that can be invoked using the `/command` syntax
@@ -14,7 +14,7 @@ Skills are markdown files with YAML frontmatter that define reusable knowledge o
 Skills are stored in directories containing a `SKILL.md` file:
 
 ```
-~/.config/amcp/skills/
+~/.config/ankaloop/skills/
 └── code-review/
     └── SKILL.md
 
@@ -22,7 +22,7 @@ Skills are stored in directories containing a `SKILL.md` file:
 └── personal-helper/
     └── SKILL.md
 
-.amcp/skills/              # Project-level skills
+.ankaloop/skills/              # Project-level skills
 └── my-project-skill/
     └── SKILL.md
 ```
@@ -49,10 +49,10 @@ The frontmatter must include:
 
 Discovery uses increasing precedence. Later locations override earlier same-name skills.
 
-1. **Built-in skills** bundled with AMCP
-2. **User skills**: `~/.config/amcp/skills/<skill-name>/SKILL.md`
+1. **Built-in skills** bundled with AnkaLoop
+2. **User skills**: `~/.config/ankaloop/skills/<skill-name>/SKILL.md`
 3. **Home agent skills**: `~/.agents/skills/<skill-name>/SKILL.md`
-4. **Project skills**: `.amcp/skills/<skill-name>/SKILL.md`
+4. **Project skills**: `.ankaloop/skills/<skill-name>/SKILL.md`
 
 ### Using Skills
 
@@ -105,14 +105,14 @@ Slash commands are custom shortcuts defined as TOML files. They allow you to sav
 Commands are `.toml` files stored in command directories:
 
 ```
-~/.config/amcp/commands/
+~/.config/ankaloop/commands/
 ├── explain.toml
 ├── review.toml
 └── git/
     ├── commit.toml
     └── log.toml
 
-.amcp/commands/           # Project-level commands
+.ankaloop/commands/           # Project-level commands
 └── deploy.toml
 ```
 
@@ -193,12 +193,12 @@ Using `/review src/main.py` injects the content of `src/main.py`.
 
 ### Discovery Locations
 
-1. **User commands**: `~/.config/amcp/commands/`
-2. **Project commands**: `.amcp/commands/` (takes precedence)
+1. **User commands**: `~/.config/ankaloop/commands/`
+2. **Project commands**: `.ankaloop/commands/` (takes precedence)
 
 ### Built-in Commands
 
-AMCP provides several built-in commands:
+AnkaLoop provides several built-in commands:
 
 | Command | Description |
 |---------|-------------|
@@ -252,10 +252,10 @@ To use these examples, copy them to your config directory:
 
 ```bash
 # Copy skills
-cp -r examples/skills/* ~/.config/amcp/skills/
+cp -r examples/skills/* ~/.config/ankaloop/skills/
 
 # Copy commands
-cp -r examples/commands/* ~/.config/amcp/commands/
+cp -r examples/commands/* ~/.config/ankaloop/commands/
 ```
 
 ## Best Practices

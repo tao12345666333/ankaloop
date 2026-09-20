@@ -24,4 +24,4 @@ This command can cause **irreversible data loss**:
    - `trash` command instead of rm
 3. **Always have backups** before destructive operations
 
-This operation has been **blocked** for your safety. If you really need to run this command, please do so manually outside of AMCP.
+This operation has been **blocked** for your safety. If you really need to run this command, please do so manually outside of AnkaLoop.

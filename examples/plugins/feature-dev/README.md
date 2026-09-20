@@ -136,9 +136,9 @@ The command will guide you through the entire process interactively.
 
 ## Requirements
 
-- AMCP v0.6.0 or later
+- AnkaLoop v0.6.0 or later
 - Access to the codebase you're developing
 
 ## Author
 
-AMCP Team
+AnkaLoop Team
