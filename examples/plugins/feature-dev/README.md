@@ -136,7 +136,7 @@ The command will guide you through the entire process interactively.
 
 ## Requirements
 
-- AnkaLoop v0.6.0 or later
+- AnkaLoop v0.14.0 or later
 - Access to the codebase you're developing
 
 ## Author

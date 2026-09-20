@@ -112,7 +112,7 @@ Found 5 issues (8 filtered as low confidence):
 
 ## Requirements
 
-- AnkaLoop v0.6.0 or later
+- AnkaLoop v0.14.0 or later
 - Git (for `--git` option)
 
 ## Author
