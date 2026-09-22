@@ -114,8 +114,8 @@ Please ensure you have:
 
 ## Requirements
 
-- AMCP v0.6.0 or later (with Markdown hook support)
+- AnkaLoop v0.14.0 or later (with Markdown hook support)
 
 ## Author
 
-AMCP Team
+AnkaLoop Team

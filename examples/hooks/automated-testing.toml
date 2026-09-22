@@ -43,7 +43,7 @@ enabled = false  # Disabled by default - enable in your project
 [[hooks.SessionStart.handlers]]
 # Log session start
 type = "command"
-command = "echo 'AMCP Testing Session started at $(date)' >> /tmp/amcp_test_sessions.log"
+command = "echo 'AnkaLoop Testing Session started at $(date)' >> /tmp/ankaloop_test_sessions.log"
 timeout = 5
 enabled = true
 
@@ -59,6 +59,6 @@ enabled = true
 [[hooks.SessionEnd.handlers]]
 # Generate session summary
 type = "command"
-command = "echo 'AMCP Testing Session ended at $(date)' >> /tmp/amcp_test_sessions.log"
+command = "echo 'AnkaLoop Testing Session ended at $(date)' >> /tmp/ankaloop_test_sessions.log"
 timeout = 10
 enabled = true

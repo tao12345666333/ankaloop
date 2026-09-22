@@ -34,7 +34,7 @@ enabled = true
 [hooks.SessionStart]
 [[hooks.SessionStart.handlers]]
 type = "command"
-command = "echo 'AMCP Session started at $(date)' >> /tmp/amcp_sessions.log"
+command = "echo 'AnkaLoop Session started at $(date)' >> /tmp/ankaloop_sessions.log"
 timeout = 5
 enabled = true
 
@@ -42,6 +42,6 @@ enabled = true
 [hooks.SessionEnd]
 [[hooks.SessionEnd.handlers]]
 type = "command"
-command = "echo 'AMCP Session ended at $(date)' >> /tmp/amcp_sessions.log"
+command = "echo 'AnkaLoop Session ended at $(date)' >> /tmp/ankaloop_sessions.log"
 timeout = 5
 enabled = true

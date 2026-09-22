@@ -53,7 +53,7 @@ enabled = true
 [[hooks.SessionStart.handlers]]
 # Log security session start
 type = "command"
-command = "echo 'AMCP Security Session started at $(date) by $(whoami)' >> /tmp/amcp_security_sessions.log"
+command = "echo 'AnkaLoop Security Session started at $(date) by $(whoami)' >> /tmp/ankaloop_security_sessions.log"
 timeout = 5
 enabled = true
 
@@ -69,6 +69,6 @@ enabled = true
 [[hooks.SessionEnd.handlers]]
 # Log security session end with summary
 type = "command"
-command = "echo 'AMCP Security Session ended at $(date)' >> /tmp/amcp_security_sessions.log"
+command = "echo 'AnkaLoop Security Session ended at $(date)' >> /tmp/ankaloop_security_sessions.log"
 timeout = 10
 enabled = true

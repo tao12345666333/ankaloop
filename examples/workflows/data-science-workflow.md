@@ -3,7 +3,7 @@
 This workflow demonstrates how multiple agents can collaborate on a data science project, from data analysis to model deployment and documentation.
 
 > **Illustrative example:** All metrics, outputs, and readiness labels below are hypothetical
-> conversation content. They are not AMCP benchmark results or production-readiness claims.
+> conversation content. They are not AnkaLoop benchmark results or production-readiness claims.
 
 ## Workflow Overview
 
@@ -288,4 +288,4 @@ Data Scientist: Perfect! Your customer churn prediction system is now complete w
 
    Delegation happens through the built-in `task` tool when the active agent has `can_delegate: true`.
 
-This workflow showcases how AMCP can handle complex data science projects with specialized agent collaboration.
+This workflow showcases how AnkaLoop can handle complex data science projects with specialized agent collaboration.

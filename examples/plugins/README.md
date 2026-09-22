@@ -1,10 +1,10 @@
-# AMCP Plugins
+# AnkaLoop Plugins
 
-This directory contains official AMCP plugins that extend functionality through custom commands, agents, skills, hooks, and workflows.
+This directory contains official AnkaLoop plugins that extend functionality through custom commands, agents, skills, hooks, and workflows.
 
-## What are AMCP Plugins?
+## What are AnkaLoop Plugins?
 
-AMCP plugins are extensions that enhance AMCP with:
+AnkaLoop plugins are extensions that enhance AnkaLoop with:
 - **Custom slash commands** - Shortcuts for common tasks
 - **Specialized agents** - Pre-configured agents for specific domains
 - **Skills** - Knowledge and behavior patterns for agents
@@ -36,7 +36,7 @@ Plugins can be shared across projects and teams, providing consistent tooling an
 3. **Use the plugin commands:**
    ```bash
    anka
-   AMCP> /feature-dev Add user authentication
+   AnkaLoop> /feature-dev Add user authentication
    ```
 
 ## Plugin Structure
@@ -72,7 +72,7 @@ mkdir -p .ankaloop/plugins/my-plugin/{commands,agents,skills,hooks}
 {
   "name": "my-plugin",
   "version": "1.0.0",
-  "description": "My custom AMCP plugin",
+  "description": "My custom AnkaLoop plugin",
   "author": "Your Name",
   "components": {
     "commands": ["commands/*.md"],
@@ -123,7 +123,7 @@ When creating plugins:
 
 ## Learn More
 
-- [AMCP Documentation](../../README.md)
+- [AnkaLoop Documentation](../../README.md)
 - [Commands and Skills Guide](../../docs/skills-and-commands.md)
 - [Agent Capabilities](../../docs/phase2-agent-capabilities.md)
 - [Hooks Guide](../../docs/hooks.md)

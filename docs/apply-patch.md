@@ -1,6 +1,6 @@
 # Apply Patch Tool
 
-The `apply_patch` tool provides a diff-based file patching system inspired by [OpenAI Codex's apply_patch](https://github.com/openai/codex). It is the **recommended way to edit files** in AMCP, offering precision, efficiency, and batch operation support.
+The `apply_patch` tool provides a diff-based file patching system inspired by [OpenAI Codex's apply_patch](https://github.com/openai/codex). It is the **recommended way to edit files** in AnkaLoop, offering precision, efficiency, and batch operation support.
 
 ## Why Use Apply Patch?
 
@@ -195,7 +195,7 @@ Looking for: ['    if not user:', '        return False']...
 The `apply_patch` tool is enabled by default. To disable it, modify your config:
 
 ```toml
-# ~/.config/amcp/config.toml
+# ~/.config/ankaloop/config.toml
 [chat]
 # Note: Currently there's no specific toggle for apply_patch
 # It's always available when tools are enabled

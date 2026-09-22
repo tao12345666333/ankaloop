@@ -2,7 +2,7 @@
     "name": "security-guidance",
     "version": "1.0.0",
     "description": "Security validation hooks with pattern-based detection and warnings",
-    "author": "AMCP Team",
+    "author": "AnkaLoop Team",
     "homepage": "https://github.com/tao12345666333/ankaloop",
     "components": {
         "commands": [],

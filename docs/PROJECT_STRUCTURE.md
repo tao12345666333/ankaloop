@@ -2,10 +2,10 @@
 
 ## Overview
 
-AMCP follows Python best practices with a clear separation of concerns:
+AnkaLoop follows Python best practices with a clear separation of concerns:
 
 ```
-AMCP/
+AnkaLoop/
 ├── src/ankaloop/              # Main package source code
 │   ├── __init__.py        # Package initialization
 │   ├── __main__.py        # Entry point for python -m ankaloop

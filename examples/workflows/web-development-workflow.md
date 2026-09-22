@@ -184,4 +184,4 @@ Web Developer: Perfect! I've now integrated the security improvements and docume
 
    Delegation happens through the built-in `task` tool when the active agent has `can_delegate: true`.
 
-This workflow demonstrates the power of AMCP's multi-agent system for complex development tasks.
+This workflow demonstrates the power of AnkaLoop's multi-agent system for complex development tasks.

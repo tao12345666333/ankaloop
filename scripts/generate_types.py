@@ -251,8 +251,8 @@ def main() -> int:
     parser.add_argument(
         "--output",
         "-o",
-        default="types/amcp-api.d.ts",
-        help="Output TypeScript file path (default: types/amcp-api.d.ts)",
+        default="types/ankaloop-api.d.ts",
+        help="Output TypeScript file path (default: types/ankaloop-api.d.ts)",
     )
     parser.add_argument(
         "--spec-output",

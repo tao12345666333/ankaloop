@@ -4,7 +4,7 @@ This workflow demonstrates how DevOps and Security agents can collaborate to cre
 
 > **Illustrative example:** The generated configurations, compliance language, and
 > production-readiness statements below are hypothetical workflow output. They are not audited,
-> certified, or evidence that AMCP itself meets a compliance or production benchmark.
+> certified, or evidence that AnkaLoop itself meets a compliance or production benchmark.
 
 ## Workflow Overview
 
@@ -414,4 +414,4 @@ DevOps Engineer: Perfect! Your secure CI/CD pipeline is now complete with all se
 
    Delegation happens through the built-in `task` tool when the active agent has `can_delegate: true`.
 
-This workflow demonstrates how AMCP can handle complex DevOps projects with comprehensive security integration through specialized agent collaboration.
+This workflow demonstrates how AnkaLoop can handle complex DevOps projects with comprehensive security integration through specialized agent collaboration.

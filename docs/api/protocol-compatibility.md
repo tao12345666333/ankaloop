@@ -1,6 +1,6 @@
-# AMCP Protocol Compatibility Guide
+# AnkaLoop Protocol Compatibility Guide
 
-This document describes how AMCP handles different protocols and ensures consistent behavior across:
+This document describes how AnkaLoop handles different protocols and ensures consistent behavior across:
 
 - **HTTP REST API** - Primary programmatic interface
 - **WebSocket** - Real-time streaming communication
@@ -10,7 +10,7 @@ This document describes how AMCP handles different protocols and ensures consist
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        AMCP Protocol Layer                               │
+│                        AnkaLoop Protocol Layer                           │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │   ┌────────────────┐                                                    │
@@ -64,7 +64,7 @@ sse_data = adapter.to_sse_data(server_event)
 
 ## Error Code Mapping
 
-AMCP uses a unified error code system that maps to appropriate responses in each protocol:
+AnkaLoop uses a unified error code system that maps to appropriate responses in each protocol:
 
 ### HTTP Status Mapping
 
@@ -215,4 +215,4 @@ python scripts/generate_types.py --server http://localhost:8080
 python scripts/generate_types.py --manual
 ```
 
-This generates `types/amcp-api.d.ts` with all API types.
+This generates `types/ankaloop-api.d.ts` with all API types.
