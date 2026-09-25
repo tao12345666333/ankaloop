@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # Keep workflow actions up to date (actions/*, astral-sh/setup-uv, docker/*, ...)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Keep pyproject.toml constraints and uv.lock fresh.
+  # Dependabot detects ankaloop as a library (published on PyPI) and widens
+  # version ranges instead of raising the lower bounds.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
