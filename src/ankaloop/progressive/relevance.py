@@ -145,6 +145,26 @@ TASK_TOOL_AFFINITY: dict[str, set[str]] = {
 }
 
 
+def _validate_cjk_keywords(tables: dict[str, dict[str, set[str]]]) -> None:
+    """Reject CJK keywords that bigram tokenization can never match.
+
+    CJK input is tokenized into 2-character bigrams (plus a unigram for
+    isolated characters), so a CJK keyword must be exactly two characters;
+    any other length silently never matches.
+    """
+    for table_name, table in tables.items():
+        for entry, keywords in table.items():
+            for keyword in keywords:
+                if not keyword.isascii() and len(keyword) != 2:
+                    raise ValueError(
+                        f"{table_name}[{entry!r}] keyword {keyword!r} must be exactly "
+                        "two characters: CJK text is tokenized into bigrams"
+                    )
+
+
+_validate_cjk_keywords({"TASK_PATTERNS": TASK_PATTERNS, "TOOL_KEYWORDS": TOOL_KEYWORDS})
+
+
 class RelevanceScorer:
     """Score tool and skill relevance for the current request."""
 

@@ -17,7 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now emits CJK character bigrams alongside ASCII words, `TASK_PATTERNS` and
   `TOOL_KEYWORDS` gained two-character Chinese synonyms, and keyword scoring compares
   ASCII and CJK vocabularies separately (taking the max) so English scores are
-  unchanged.
+  unchanged. Two gaps remain by design: pure-Chinese input still cannot reach MCP
+  tools or skills via keywords, because MCP tool descriptions and skill metadata are
+  typically English — closing that needs bilingual metadata or embedding-based
+  matching.
 - **`ANKA_CHAT_MODEL` is honored again**: the VM and Docker deployment modes pass the
   chat model through this variable (systemd `EnvironmentFile` / container env) and expect
   AnkaLoop to read it, but the reader was removed together with the legacy REPL chat path,

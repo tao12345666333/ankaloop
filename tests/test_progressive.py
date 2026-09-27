@@ -92,6 +92,16 @@ def test_tokenize_extracts_cjk_bigrams_and_ascii_words():
     assert {"fix", "bug", "这个"}.issubset(mixed)
 
 
+def test_cjk_keyword_validation_rejects_unmatchable_lengths():
+    from ankaloop.progressive.relevance import _validate_cjk_keywords
+
+    for bad in ["数据库", "查日志", "查"]:
+        with pytest.raises(ValueError, match="exactly two characters"):
+            _validate_cjk_keywords({"TOOL_KEYWORDS": {"bash": {bad}}})
+
+    _validate_cjk_keywords({"TASK_PATTERNS": {"debugging": {"修复"}}})
+
+
 def test_classify_task_recognizes_chinese_input():
     scorer = RelevanceScorer()
 
