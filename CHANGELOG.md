@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Progressive tool selection works for Chinese input**: `_tokenize` only matched
+  ASCII, so Chinese user input produced an empty token set — task classification fell
+  back to `general`, keyword scores were always 0, and every `on_demand`/`frequent`
+  tool (`apply_patch`, `todo`, `memory`, `task`, MCP tools) scored 0.0 and was
+  excluded below the relevance threshold at the start of each session. The tokenizer
+  now emits CJK character bigrams alongside ASCII words, `TASK_PATTERNS` and
+  `TOOL_KEYWORDS` gained two-character Chinese synonyms, and keyword scoring compares
+  ASCII and CJK vocabularies separately (taking the max) so English scores are
+  unchanged.
 - **`ANKA_CHAT_MODEL` is honored again**: the VM and Docker deployment modes pass the
   chat model through this variable (systemd `EnvironmentFile` / container env) and expect
   AnkaLoop to read it, but the reader was removed together with the legacy REPL chat path,

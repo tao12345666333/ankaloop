@@ -5,6 +5,9 @@ from enum import StrEnum
 
 from .usage_tracker import ToolUsageSnapshot, ToolUsageTracker
 
+_ASCII_WORD_RE = re.compile(r"[a-zA-Z0-9_]+")
+_CJK_RUN_RE = re.compile(r"[一-鿿]+")  # CJK Unified Ideographs
+
 
 class ToolTier(StrEnum):
     """Tool importance tiers."""
@@ -23,27 +26,113 @@ class SkillLoadLevel(StrEnum):
     FULL = "full"
 
 
+# Chinese keywords must be exactly two characters long: CJK text is tokenized
+# into character bigrams (see _tokenize), so only 2-char keywords can match.
 TASK_PATTERNS: dict[str, set[str]] = {
-    "implementation": {"implement", "create", "add", "build", "write", "develop"},
-    "debugging": {"fix", "bug", "error", "failing", "broken", "debug"},
-    "exploration": {"find", "search", "where", "show", "list", "locate"},
-    "review": {"review", "diff", "pr", "pull", "analyze"},
-    "automation": {"run", "command", "script", "shell", "bash", "test"},
+    "implementation": {
+        "implement",
+        "create",
+        "add",
+        "build",
+        "write",
+        "develop",
+        "实现",
+        "创建",
+        "新增",
+        "添加",
+        "构建",
+        "开发",
+        "编写",
+    },
+    "debugging": {
+        "fix",
+        "bug",
+        "error",
+        "failing",
+        "broken",
+        "debug",
+        "修复",
+        "调试",
+        "报错",
+        "错误",
+        "失败",
+        "故障",
+        "崩溃",
+    },
+    "exploration": {
+        "find",
+        "search",
+        "where",
+        "show",
+        "list",
+        "locate",
+        "查找",
+        "搜索",
+        "哪里",
+        "哪个",
+        "显示",
+        "列出",
+        "定位",
+    },
+    "review": {"review", "diff", "pr", "pull", "analyze", "审查", "评审", "检查", "分析", "对比"},
+    "automation": {"run", "command", "script", "shell", "bash", "test", "运行", "执行", "命令", "脚本", "测试"},
 }
 
 
 TOOL_KEYWORDS: dict[str, set[str]] = {
-    "read_file": {"read", "open", "content", "file", "source"},
-    "grep": {"search", "grep", "find", "pattern", "regex"},
-    "think": {"plan", "reason", "analyze", "think"},
-    "web_search": {"web", "internet", "search", "docs", "documentation", "online", "current"},
-    "web_fetch": {"web", "internet", "fetch", "url", "page", "website", "docs", "content"},
-    "bash": {"run", "command", "shell", "execute", "build", "test"},
-    "write_file": {"write", "create", "save", "generate", "overwrite"},
-    "apply_patch": {"edit", "patch", "modify", "change", "update", "fix"},
-    "todo": {"todo", "task", "plan", "checklist"},
-    "task": {"parallel", "delegate", "subagent", "task"},
-    "memory": {"remember", "history", "context", "memory"},
+    "read_file": {"read", "open", "content", "file", "source", "读取", "打开", "查看", "文件", "内容", "源码"},
+    "grep": {"search", "grep", "find", "pattern", "regex", "搜索", "查找", "正则", "匹配"},
+    "think": {"plan", "reason", "analyze", "think", "思考", "分析", "计划", "推理"},
+    "web_search": {
+        "web",
+        "internet",
+        "search",
+        "docs",
+        "documentation",
+        "online",
+        "current",
+        "联网",
+        "搜索",
+        "上网",
+        "网络",
+        "文档",
+        "资料",
+    },
+    "web_fetch": {
+        "web",
+        "internet",
+        "fetch",
+        "url",
+        "page",
+        "website",
+        "docs",
+        "content",
+        "网页",
+        "抓取",
+        "获取",
+        "链接",
+        "页面",
+        "网站",
+    },
+    "bash": {"run", "command", "shell", "execute", "build", "test", "运行", "执行", "命令", "终端", "构建", "测试"},
+    "write_file": {"write", "create", "save", "generate", "overwrite", "写入", "创建", "保存", "生成", "覆盖"},
+    "apply_patch": {
+        "edit",
+        "patch",
+        "modify",
+        "change",
+        "update",
+        "fix",
+        "编辑",
+        "修改",
+        "更改",
+        "更新",
+        "修复",
+        "补丁",
+    },
+    "todo": {"todo", "task", "plan", "checklist", "待办", "任务", "清单", "计划"},
+    "task": {"parallel", "delegate", "subagent", "task", "并行", "委派", "委托", "代理", "任务"},
+    "memory": {"remember", "history", "context", "memory", "记住", "记忆", "历史"},
 }
 
 
@@ -73,7 +162,16 @@ class RelevanceScorer:
         context_tokens = user_tokens | self._tokenize(conversation_text)
         tool_tokens = TOOL_KEYWORDS.get(tool_name, set()) | self._tokenize(tool_description)
 
-        keyword_score = self._overlap_score(tool_tokens, context_tokens)
+        # Score ASCII and CJK keyword vocabularies separately and keep the
+        # better one. Overlap is normalized by vocabulary size, so merging
+        # both scripts into one set would dilute scores for inputs that can
+        # only ever match one of them.
+        ascii_tool_tokens = {token for token in tool_tokens if token.isascii()}
+        cjk_tool_tokens = tool_tokens - ascii_tool_tokens
+        keyword_score = max(
+            self._overlap_score(ascii_tool_tokens, context_tokens),
+            self._overlap_score(cjk_tool_tokens, context_tokens),
+        )
 
         task_type = self.classify_task(user_input)
         affinity_tools = TASK_TOOL_AFFINITY.get(task_type, set())
@@ -119,7 +217,19 @@ class RelevanceScorer:
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
-        return set(re.findall(r"[a-zA-Z0-9_]+", text.lower()))
+        """Tokenize into ASCII words and CJK character bigrams.
+
+        CJK text has no whitespace word boundaries, so emit bigrams (plus a
+        unigram for isolated characters) to make keyword overlap work without
+        a full segmenter.
+        """
+        tokens = set(_ASCII_WORD_RE.findall(text.lower()))
+        for run in _CJK_RUN_RE.findall(text):
+            if len(run) == 1:
+                tokens.add(run)
+            else:
+                tokens.update(run[i : i + 2] for i in range(len(run) - 1))
+        return tokens
 
     @staticmethod
     def _overlap_score(a: set[str], b: set[str]) -> float:
