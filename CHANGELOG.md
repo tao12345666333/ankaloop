@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **fastmcp upgraded to >=3.4.0,<4**: fastmcp 2.x imports `authlib.jose` at import
+  time, which authlib 1.7+ deprecates in favor of `joserfc`, printing an
+  `AuthlibDeprecationWarning` on every launch. fastmcp 3.4.0 migrated its auth stack
+  to `joserfc` (PrefectHQ/fastmcp#4221), so the warning is gone and the dependency
+  tree is ready for authlib 2.0. AnkaLoop only uses fastmcp's client API (`Client`,
+  `StdioTransport`, `StreamableHttpTransport`), which is unchanged in 3.x; verified
+  against live stdio and remote (Exa) MCP servers.
+
 ### Fixed
 
 - **Progressive tool selection works for Chinese input**: `_tokenize` only matched
