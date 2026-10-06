@@ -31,6 +31,7 @@ hooks, and automation in one Python package that you can run locally or self-hos
 
 ```bash
 python -m pip install ankaloop
+# or: uv tool install ankaloop
 anka init
 anka
 ```
@@ -57,8 +58,11 @@ AnkaLoop requires **Python 3.11+** and credentials for a supported model provide
 ### Install from PyPI
 
 ```bash
-# Install the latest stable release
+# Install the latest stable release (with pip)
 python -m pip install ankaloop
+
+# Or install with uv
+uv tool install ankaloop
 
 # Configure a provider, then start in the current project
 anka init
@@ -81,6 +85,7 @@ uvx ankaloop
 
 ```bash
 python -m pip install "ankaloop[telegram]"
+# or: uv tool install "ankaloop[telegram]"
 anka telegram setup
 ```
 
