@@ -265,6 +265,94 @@ class TestOpenAIClient:
         assert error.value.context_window == 100
         assert error.value.output_reserve == 20
 
+    @staticmethod
+    def _capture_completion(client: OpenAIClient) -> dict:
+        captured: dict = {}
+
+        def completion(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="done", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            )
+
+        client.client.completion = completion
+        return captured
+
+    def test_chat_sends_configured_output_limit_when_caller_omits_one(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="test-model",
+            model_config=ModelConfig(context_window=100_000, output_limit=4096),
+        )
+        captured = self._capture_completion(client)
+
+        response = client.chat([{"role": "user", "content": "hello"}])
+
+        assert captured["max_tokens"] == 4096
+        assert response.content == "done"
+
+    def test_chat_explicit_max_tokens_overrides_configured_default(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="test-model",
+            model_config=ModelConfig(context_window=100_000, output_limit=4096),
+        )
+        captured = self._capture_completion(client)
+
+        client.chat([{"role": "user", "content": "hello"}], max_tokens=123)
+
+        assert captured["max_tokens"] == 123
+
+    def test_chat_does_not_add_max_tokens_when_native_alias_given(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="test-model",
+            model_config=ModelConfig(context_window=100_000, output_limit=4096),
+        )
+        captured = self._capture_completion(client)
+
+        client.chat([{"role": "user", "content": "hello"}], max_completion_tokens=200)
+
+        assert "max_tokens" not in captured
+        assert captured["max_completion_tokens"] == 200
+
+    @pytest.mark.asyncio
+    async def test_achat_sends_configured_output_limit_when_caller_omits_one(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="test-model",
+            model_config=ModelConfig(context_window=100_000, output_limit=4096),
+        )
+        captured: dict = {}
+
+        async def acompletion(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="done", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            )
+
+        client.client.acompletion = acompletion
+
+        await client.achat([{"role": "user", "content": "hello"}])
+
+        assert captured["max_tokens"] == 4096
+
     def test_chat_preserves_tool_call_extra_content(self):
         client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
         extra = {"google": {"thought_signature": "sig-abc"}}
@@ -547,6 +635,46 @@ class TestOpenAIResponsesClient:
         assert captured["temperature"] == 0.2
         assert captured["stream"] is True
         assert captured["allow_running_loop"] is True
+
+    @staticmethod
+    def _responses_client_with_limit(output_limit: int) -> OpenAIResponsesClient:
+        client = OpenAIResponsesClient.__new__(OpenAIResponsesClient)
+        client.model = "gpt-5.5"
+        client._model_config = ModelConfig(context_window=100_000, output_limit=output_limit)
+        client._provider_id = "openai"
+        client._request_limit_cache = {}
+        return client
+
+    def test_responses_sends_configured_output_limit_when_caller_omits_one(self):
+        client = self._responses_client_with_limit(4096)
+        captured: dict = {}
+        completed = SimpleNamespace(output=[], status="completed", usage=None)
+
+        def responses(**kwargs):
+            captured.update(kwargs)
+            return completed
+
+        client.client = SimpleNamespace(responses=responses)
+
+        client.chat([{"role": "user", "content": "hello"}])
+
+        assert captured["max_output_tokens"] == 4096
+
+    @pytest.mark.asyncio
+    async def test_responses_achat_sends_configured_output_limit_when_caller_omits_one(self):
+        client = self._responses_client_with_limit(4096)
+        captured: dict = {}
+        completed = SimpleNamespace(output=[], status="completed", usage=None)
+
+        async def aresponses(**kwargs):
+            captured.update(kwargs)
+            return completed
+
+        client.client = SimpleNamespace(aresponses=aresponses)
+
+        await client.achat([{"role": "user", "content": "hello"}])
+
+        assert captured["max_output_tokens"] == 4096
 
 
 class TestAnthropicClient:
