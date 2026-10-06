@@ -348,6 +348,19 @@ class BaseLLMClient(ABC):
         """Set a callback invoked when local request validation detects overflow."""
         self._context_overflow_callback = callback
 
+    def _default_output_limit(self, model: str) -> int:
+        """Output-token limit to send when the caller did not specify one.
+
+        Some providers (e.g. OpenRouter) preflight requests against credit
+        limits and assume worst-case output when the request carries no
+        limit, so always sending a bounded value avoids spurious rejections.
+        """
+        return get_model_output_limit(
+            model,
+            provider_id=getattr(self, "_provider_id", None),
+            model_config=getattr(self, "_model_config", None),
+        )
+
     def _validate_request_size(
         self,
         messages: list[Message],
@@ -471,6 +484,8 @@ class AnyLLMClient(BaseLLMClient):
             model=model,
             max_tokens=_largest_output_limit(output_limits),
         )
+        if _largest_output_limit(output_limits) is None:
+            kwargs["max_tokens"] = self._default_output_limit(model)
         callback = stream_callback
         stream = callback is not None
         params: dict[str, Any] = {
@@ -627,6 +642,8 @@ class AnyLLMClient(BaseLLMClient):
             model=model,
             max_tokens=_largest_output_limit(output_limits),
         )
+        if _largest_output_limit(output_limits) is None:
+            kwargs["max_tokens"] = self._default_output_limit(model)
         params: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -815,6 +832,8 @@ class OpenAIResponsesClient(BaseLLMClient):
             model=model,
             max_tokens=output_limit,
         )
+        if output_limit is None:
+            max_tokens = self._default_output_limit(model)
         params: dict[str, Any] = {
             "model": model,
             "input_data": cast(Any, self._convert_messages(messages)),
@@ -870,6 +889,8 @@ class OpenAIResponsesClient(BaseLLMClient):
             model=model,
             max_tokens=output_limit,
         )
+        if output_limit is None:
+            max_tokens = self._default_output_limit(model)
         params: dict[str, Any] = {
             "model": model,
             "input_data": cast(Any, self._convert_messages(messages)),

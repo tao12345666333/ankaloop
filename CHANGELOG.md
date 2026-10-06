@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Requests now carry a bounded output-token limit**: `AnyLLMClient` and
+  `OpenAIResponsesClient` never put `max_tokens`/`max_output_tokens` on the wire
+  unless the caller passed one, so providers that preflight affordability against
+  credit limits (e.g. OpenRouter) assumed worst-case output (131072 tokens for
+  `z-ai/glm-5.3-flash`) and rejected requests with HTTP 402. When the caller omits a
+  limit, the clients now send the configured `[chat.model_config] output_limit` (or
+  the models.dev database value, default 8192); explicit
+  `max_tokens`/`max_completion_tokens`/`max_output_tokens` still win.
+
 - **Progressive tool selection works for Chinese input**: `_tokenize` only matched
   ASCII, so Chinese user input produced an empty token set — task classification fell
   back to `general`, keyword scores were always 0, and every `on_demand`/`frequent`
