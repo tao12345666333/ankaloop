@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **OpenTelemetry tracing**: a new `[tracing]` config section (and standard `OTEL_*`
+  environment variables) emits one trace per conversation turn following the GenAI
+  semantic conventions: `invoke_agent` → `chat` / `execute_tool` / `ankaloop.hook` /
+  `ankaloop.prepare_context` / `ankaloop.compact_context`, with subagent turns nested
+  under the delegating `execute_tool task` span. Spans carry token usage, context size,
+  tool outcome, denial reason, and the existing runtime events; prompt/tool content is
+  off by default and opt-in via `capture_content`. Inbound `traceparent` headers on the
+  HTTP/WebSocket server are honoured, hook subprocesses receive `TRACEPARENT`, and
+  `trace_id` is returned on the prompt response and every `turn.*` event. Only
+  `opentelemetry-api` is a core dependency; install `ankaloop[tracing]` for the SDK and
+  OTLP exporter. See `docs/tracing.md`.
+
 ### Changed
 
 - **fastmcp upgraded to >=3.4.0,<4**: fastmcp 2.x imports `authlib.jose` at import

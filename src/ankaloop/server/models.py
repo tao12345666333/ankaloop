@@ -150,6 +150,7 @@ class PromptResponse(BaseModel):
     response: str | None = None
     command: str | None = None
     new_session_id: str | None = None
+    trace_id: str | None = None  # Hex trace id of the turn when tracing is enabled
 
 
 class HealthResponse(BaseModel):

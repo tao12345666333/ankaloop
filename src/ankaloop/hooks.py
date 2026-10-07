@@ -47,6 +47,8 @@ from pathlib import Path
 from typing import Any
 
 from .constants import CONFIG_DIR_NAME, PROJECT_DIR_NAME
+from .tracing import hook_env_vars, hook_span, set_attributes
+from .tracing import semconv as sc
 
 logger = logging.getLogger(__name__)
 
@@ -641,6 +643,18 @@ class HooksManager:
         if not handlers:
             return HookOutput()
 
+        with hook_span(event.value, handler_count=len(handlers)) as span:
+            combined_output = await self._run_handlers(handlers, hook_input)
+            set_attributes(
+                span,
+                {
+                    sc.ANKALOOP_HOOK_DECISION: combined_output.decision.value,
+                    sc.ANKALOOP_HOOK_SUCCESS: combined_output.success,
+                },
+            )
+            return combined_output
+
+    async def _run_handlers(self, handlers: list[HookHandler], hook_input: HookInput) -> HookOutput:
         combined_output = HookOutput()
 
         for handler in handlers:
@@ -790,6 +804,7 @@ class HooksManager:
         env["ANKA_HOOK_EVENT"] = hook_input.hook_event_name
         if hook_input.tool_name:
             env["ANKA_TOOL_NAME"] = hook_input.tool_name
+        env.update(hook_env_vars())
         return env
 
     async def _run_hook_process(

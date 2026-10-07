@@ -55,6 +55,7 @@ from .event_bus import (
     emit_task_event,
 )
 from .multi_agent import AgentMode, create_subagent_config, get_agent_registry
+from .tracing import semconv as sc
 
 logger = logging.getLogger(__name__)
 
@@ -457,6 +458,17 @@ class TaskManager:
 
                 # Create agent
                 agent = create_agent_from_config(config, ephemeral=True)
+                # The subagent's turn span joins the parent's execute_tool span:
+                # asyncio tasks inherit contextvars, so only descriptive
+                # attributes need passing explicitly.
+                execution_context = getattr(agent, "execution_context", None)
+                if isinstance(execution_context, dict):
+                    execution_context["source"] = "task"
+                    execution_context["trace_attributes"] = {
+                        sc.ANKALOOP_TASK_ID: task.id,
+                        sc.ANKALOOP_TASK_AGENT_TYPE: task.agent_type,
+                        sc.ANKALOOP_TASK_PARENT_SESSION_ID: task.parent_session_id,
+                    }
 
                 try:
                     # Execute the task in the same trusted workspace as its parent.

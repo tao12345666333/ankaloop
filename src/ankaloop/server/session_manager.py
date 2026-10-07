@@ -199,6 +199,7 @@ class SessionManager:
                 session_id=session_id,
                 services=self.services,
             )
+            agent.execution_context["source"] = "server"
 
             # Create managed session
             session = ManagedSession(

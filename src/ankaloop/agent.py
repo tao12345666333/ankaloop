@@ -59,6 +59,16 @@ from .tool_execution import (
 )
 from .tool_journal import JournalRecovery, ToolJournal
 from .tool_loop import ToolLoop
+from .tracing import (
+    attach_carrier,
+    chat_span,
+    current_trace_id,
+    mirror_event,
+    record_chat_response,
+    set_attributes,
+    turn_span,
+)
+from .tracing import semconv as sc
 from .turn_service import TurnService
 
 logger = logging.getLogger(__name__)
@@ -489,6 +499,7 @@ class Agent:
             "timestamp": datetime.now().isoformat(),
             **data,
         }
+        mirror_event(event_type, data)
         if event_type == "message.chunk" or event_type.startswith("tool.call_"):
             active_turn = self._runtime.active_turn
             if active_turn is not None:
@@ -791,18 +802,62 @@ class Agent:
 
     async def _process_turn_request(self, request: TurnRequest) -> str:
         self.execution_context["turn_id"] = request.id
-        return await self._process_message(
-            request.prompt,
-            request.work_dir,
-            request.stream,
-            request.show_progress,
-        )
+        handle = self._runtime.active_turn
+        span_attributes: dict[str, Any] = {
+            sc.ANKALOOP_TURN_PRIORITY: request.priority.name.lower(),
+        }
+        if handle is not None and handle.started_at is not None:
+            wait = (handle.started_at - request.created_at).total_seconds() * 1000
+            span_attributes[sc.ANKALOOP_TURN_QUEUE_WAIT_MS] = max(0.0, round(wait, 3))
+        extra = self.execution_context.get("trace_attributes")
+        if isinstance(extra, dict):
+            span_attributes.update(extra)
+
+        # The runtime worker task outlives any caller span, so the caller's
+        # context travels explicitly on the request and is re-attached here.
+        with (
+            attach_carrier(request.trace_context),
+            turn_span(
+                self.name,
+                session_id=self.session_id,
+                source=str(self.execution_context.get("source", "agent")),
+                turn_id=request.id,
+                attributes=span_attributes,
+            ) as span,
+        ):
+            trace_id = current_trace_id()
+            if handle is not None:
+                handle.trace_id = trace_id
+            if trace_id is None:
+                self.execution_context.pop("trace_id", None)
+            else:
+                self.execution_context["trace_id"] = trace_id
+            try:
+                return await self._process_message(
+                    request.prompt,
+                    request.work_dir,
+                    request.stream,
+                    request.show_progress,
+                )
+            finally:
+                set_attributes(
+                    span,
+                    {
+                        sc.ANKALOOP_TURN_STEPS: self.step_count,
+                        sc.ANKALOOP_TURN_LLM_CALLS: self.current_request_llm_calls,
+                        sc.ANKALOOP_TURN_TOOL_CALLS: self.current_request_tool_calls,
+                        sc.ANKALOOP_CONTEXT_TOKENS: self.last_context_tokens,
+                        sc.ANKALOOP_CONTEXT_WINDOW: self.last_context_window,
+                    },
+                )
 
     def _on_runtime_event(self, event: str, handle: TurnHandle) -> None:
         data: dict[str, Any] = {
             "turn_id": handle.id,
             "turn_status": handle.status.value,
         }
+        if handle.trace_id is not None:
+            data["trace_id"] = handle.trace_id
         outcome = handle.outcome
         if outcome and isinstance(outcome.error, ProviderError):
             data["error_kind"] = outcome.error.kind.value
@@ -1311,51 +1366,79 @@ class Agent:
                 stream_callback=callback,
             )
 
-        for attempt in range(max_retries + 1):
-            try:
-                self.current_request_llm_calls += 1
-                self.total_llm_calls += 1
-                return await asyncio.wait_for(call_once(), timeout=timeout)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                provider_error = classify_provider_error(exc, partial_output=emitted_output)
-                if isinstance(provider_error, ContextOverflowError):
-                    if not provider_error.timeline_emitted:
-                        self._record_context_overflow(provider_error)
-                    if provider_error is exc:
-                        raise
-                    raise provider_error from exc
-                if not provider_error.retryable or attempt >= max_retries:
+        # One ``chat`` span per logical call; retries are events on it.
+        with chat_span(
+            self._llm_model_name(llm_client, policy),
+            provider=self._llm_provider_name(llm_client, policy),
+            messages=messages,
+            tools=tools,
+        ) as span:
+            for attempt in range(max_retries + 1):
+                try:
+                    self.current_request_llm_calls += 1
+                    self.total_llm_calls += 1
+                    response = await asyncio.wait_for(call_once(), timeout=timeout)
+                    estimated_input = None
+                    if span.is_recording() and getattr(response, "usage", None) is None:
+                        estimated_input = estimate_request_tokens(messages, tools)
+                    record_chat_response(span, response, estimated_input_tokens=estimated_input)
+                    return response
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    provider_error = classify_provider_error(exc, partial_output=emitted_output)
+                    if isinstance(provider_error, ContextOverflowError):
+                        if not provider_error.timeline_emitted:
+                            self._record_context_overflow(provider_error)
+                        if provider_error is exc:
+                            raise
+                        raise provider_error from exc
+                    if not provider_error.retryable or attempt >= max_retries:
+                        self._emit_event(
+                            "provider.error",
+                            {
+                                "error_kind": provider_error.kind.value,
+                                "status_code": provider_error.status_code,
+                                "partial_output": provider_error.partial_output,
+                                "attempt": attempt + 1,
+                            },
+                        )
+                        if provider_error is exc:
+                            raise
+                        raise provider_error from exc
+
+                    retry_delay = provider_error.retry_after
+                    if retry_delay is None:
+                        retry_delay = random.uniform(0.0, min(30.0, base_delay * (2**attempt)))
+                    retry_delay = min(retry_delay, 60.0)
                     self._emit_event(
-                        "provider.error",
+                        "provider.retry",
                         {
                             "error_kind": provider_error.kind.value,
                             "status_code": provider_error.status_code,
-                            "partial_output": provider_error.partial_output,
-                            "attempt": attempt + 1,
+                            "attempt": attempt + 2,
+                            "delay_seconds": retry_delay,
                         },
                     )
-                    if provider_error is exc:
-                        raise
-                    raise provider_error from exc
+                    await asyncio.sleep(retry_delay)
 
-                retry_delay = provider_error.retry_after
-                if retry_delay is None:
-                    retry_delay = random.uniform(0.0, min(30.0, base_delay * (2**attempt)))
-                retry_delay = min(retry_delay, 60.0)
-                self._emit_event(
-                    "provider.retry",
-                    {
-                        "error_kind": provider_error.kind.value,
-                        "status_code": provider_error.status_code,
-                        "attempt": attempt + 2,
-                        "delay_seconds": retry_delay,
-                    },
-                )
-                await asyncio.sleep(retry_delay)
+            raise AssertionError("provider retry loop exhausted without returning or raising")
 
-        raise AssertionError("provider retry loop exhausted without returning or raising")
+    @staticmethod
+    def _llm_model_name(llm_client: Any, policy: ChatConfig) -> str | None:
+        model = getattr(llm_client, "model", None)
+        if not isinstance(model, str) or not model:
+            model = policy.model
+        return model or None
+
+    @staticmethod
+    def _llm_provider_name(llm_client: Any, policy: ChatConfig) -> str | None:
+        provider = getattr(llm_client, "provider", None)
+        if not isinstance(provider, str) or not provider:
+            provider = policy.api_type
+        if not provider:
+            return None
+        return "openai" if provider == "openai_responses" else provider
 
     def _attach_context_overflow_observer(self, llm_client: Any) -> None:
         """Attach timeline reporting to a client when it supports local overflow checks."""
