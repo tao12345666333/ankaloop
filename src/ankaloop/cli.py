@@ -33,6 +33,7 @@ from .constants import CONFIG_DIR_NAME
 from .mcp_client import call_mcp_tool, list_mcp_tools
 from .multi_agent import get_agent_registry
 from .skills import get_skill_manager
+from .tracing import configure_tracing_from_config
 
 
 def get_git_commit_hash() -> str | None:
@@ -749,6 +750,7 @@ def main(
     ] = False,
 ) -> None:
     """Enhanced agent chat with improved tool management and context awareness."""
+    configure_tracing_from_config()
 
     # If a subcommand is invoked, don't run the agent
     if ctx.invoked_subcommand is not None:
@@ -895,6 +897,8 @@ def main(
             agent = Agent(agent_spec, session_id=session_id)
             console.print(f"[green]Using default agent: {agent_spec.name}[/green]")
 
+        agent.execution_context["source"] = "cli"
+
         # Handle session clearing
         if clear_session:
             asyncio.run(agent.clear_conversation_history())
@@ -987,6 +991,7 @@ def main(
                                         console.print(f"Active skills: {', '.join(s.name for s in active_skills)}")
                                 elif result.content == "new_session":
                                     agent = Agent(agent.agent_spec)
+                                    agent.execution_context["source"] = "cli"
                                     console.print(f"[green]New session started: {agent.session_id}[/green]")
                                 elif result.content == "session:list":
                                     session_info = agent.get_conversation_summary()
@@ -995,6 +1000,7 @@ def main(
                                 elif result.content.startswith("session:switch "):
                                     target_session_id = result.content.removeprefix("session:switch ").strip()
                                     agent = Agent(agent.agent_spec, session_id=target_session_id)
+                                    agent.execution_context["source"] = "cli"
                                     console.print(f"[green]Switched to session: {agent.session_id}[/green]")
                                 elif result.content == "cancel":
                                     console.print("[yellow]No active request to cancel.[/yellow]")

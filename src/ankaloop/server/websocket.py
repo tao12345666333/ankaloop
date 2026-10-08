@@ -19,6 +19,7 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from ..runtime import ErrorEnvelope
+from ..tracing import attach_carrier, carrier_from_headers
 from .interaction import apply_interaction_result, route_server_interaction
 from .models import EventType
 from .session_manager import SessionNotFoundError, get_session_manager
@@ -273,6 +274,8 @@ async def websocket_endpoint(
 
     await connection_manager.connect(websocket, session_id)
     prompt_tasks: set[asyncio.Task[None]] = set()
+    # Handshake headers may carry a W3C traceparent; prompt tasks join it.
+    trace_carrier = carrier_from_headers(websocket.headers)
 
     def prompt_finished(task: asyncio.Task[None]) -> None:
         prompt_tasks.discard(task)
@@ -304,7 +307,8 @@ async def websocket_endpoint(
                 )
 
             elif action == "prompt":
-                task = asyncio.create_task(handle_prompt(websocket, msg_id, payload))
+                with attach_carrier(trace_carrier):
+                    task = asyncio.create_task(handle_prompt(websocket, msg_id, payload))
                 prompt_tasks.add(task)
                 task.add_done_callback(prompt_finished)
 

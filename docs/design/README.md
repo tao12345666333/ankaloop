@@ -16,6 +16,7 @@ This directory contains internal design documents from AMCP's development phases
 | `phase9-progressive-view.md` | Progressive context loading |
 | `phase10-telegram-first-assistant.md` | Telegram-first assistant experience |
 | `phase10-anchor.md` | Execution anchor points for observability |
+| `phase11-tracing.md` | OpenTelemetry tracing for turns, LLM calls, tools, subagents |
 
 ### Feature Specs
 

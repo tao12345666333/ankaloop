@@ -241,6 +241,7 @@ async def send_prompt(session_id: str, request: PromptRequest) -> PromptResponse
             message_id=handle.id,
             status="complete",
             response=response_text,
+            trace_id=handle.trace_id,
         )
 
     except SessionNotFoundError:
