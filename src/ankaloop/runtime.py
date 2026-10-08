@@ -8,12 +8,14 @@ import heapq
 import logging
 import uuid
 from collections import deque
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum, StrEnum
 from pathlib import Path
 from typing import Any
+
+from .tracing import capture_carrier
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,8 @@ class TurnRequest:
     show_progress: bool
     priority: MessagePriority
     created_at: datetime = field(default_factory=datetime.now)
+    trace_context: Mapping[str, str] = field(default_factory=dict)
+    """W3C trace-context carrier captured at submit time (empty when untraced)."""
 
 
 @dataclass(frozen=True)
@@ -209,6 +213,8 @@ class TurnHandle:
         self.status = TurnStatus.QUEUED
         self.started_at: datetime | None = None
         self.finished_at: datetime | None = None
+        self.trace_id: str | None = None
+        """Hex trace id of the turn's ``invoke_agent`` span, set once it starts."""
         self._completion: asyncio.Future[TurnResult] = asyncio.get_running_loop().create_future()
         self.events: asyncio.Queue[TurnEvent] = asyncio.Queue()
         self.events.put_nowait(TurnEvent.transition(self.id, TurnStatus.QUEUED))
@@ -398,6 +404,7 @@ class SessionRuntime:
             stream=stream,
             show_progress=show_progress,
             priority=priority,
+            trace_context=capture_carrier(),
         )
         handle = TurnHandle(self, request)
         async with self._lock:
@@ -552,6 +559,8 @@ class SessionRuntime:
 
     def _emit(self, event: str, handle: TurnHandle) -> None:
         data: dict[str, Any] = {"turn_status": handle.status.value}
+        if handle.trace_id is not None:
+            data["trace_id"] = handle.trace_id
         outcome = handle.outcome
         if outcome is not None:
             data["response"] = outcome.value

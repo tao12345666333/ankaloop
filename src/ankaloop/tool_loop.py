@@ -25,6 +25,8 @@ from .tool_execution import (
     normalize_tool_calls,
 )
 from .tool_journal import canonical_args_hash, classify_recovery_mode
+from .tracing import record_error, record_tool_denied, record_tool_result, set_attributes, tool_span
+from .tracing import semconv as sc
 from .ui import LiveUI
 
 if TYPE_CHECKING:
@@ -292,263 +294,282 @@ class ToolLoop:
                     for tc in tool_calls:
                         tool_name = tc.name
                         tool_id = tc.id
-                        if tc.argument_error:
-                            tool_result_text = f"Tool argument error: {tc.argument_error}"
-                            block = live_ui.add_tool(tool_name, {})
-                            live_ui.finish_tool(block, success=False, result=tool_result_text)
-                            append_canonical(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_id,
-                                    "name": tool_name,
-                                    "content": tool_result_text,
-                                }
-                            )
-                            continue
-                        assert tc.arguments is not None
-                        args = tc.arguments
-
-                        if tool_name not in exposed_tools or not capability.allows(tool_name):
-                            tool_result_text = f"Tool permission denied: '{tool_name}' is not authorized"
-                            block = live_ui.add_tool(tool_name, args)
-                            live_ui.finish_tool(block, success=False, result=tool_result_text)
-                            self._agent._emit_event(
-                                "tool.call_denied",
-                                {
-                                    "tool_name": tool_name,
-                                    "tool_id": tool_id,
-                                    "reason": tool_result_text,
-                                },
-                            )
-                            append_canonical(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_id,
-                                    "name": tool_name,
-                                    "content": tool_result_text,
-                                }
-                            )
-                            continue
-
-                        # Hooks must inspect the same canonical arguments that
-                        # execution will use. For example, grep's common
-                        # ``path`` near-miss becomes ``paths`` here.
-                        args = executor.prepare_model_arguments(tool_name, args)
-
-                        # Run PreToolUse hooks
-                        pre_hook_output = await self._agent._run_pre_tool_use_hooks(
-                            session_id=self._agent.session_id,
-                            tool_name=tool_name,
-                            tool_input=args,
-                            tool_use_id=tool_id,
-                            project_dir=workspace_root,
-                        )
-
-                        # Check hook decision
-                        if pre_hook_output.decision == HookDecision.DENY:
-                            # Tool execution denied by hook
-                            tool_result_text = (
-                                f"Tool denied by hook: {pre_hook_output.decision_reason or 'No reason given'}"
-                            )
-                            block = live_ui.add_tool(tool_name, args)
-                            live_ui.finish_tool(block, success=False, result=tool_result_text)
-                            append_canonical(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_id,
-                                    "name": tool_name,
-                                    "content": tool_result_text,
-                                }
-                            )
-                            continue
-
-                        # Apply any input updates from hooks
-                        if pre_hook_output.updated_input:
-                            args = {**args, **pre_hook_output.updated_input}
-
-                        # Record tool call
-                        tool_call_record = {
-                            "step": self._agent.step_count,
-                            "tool": tool_name,
-                            "args": tc.raw_arguments,
-                            "timestamp": datetime.now().isoformat(),
-                        }
-                        self._agent.tool_calls_history.append(tool_call_record)
-                        self._agent.current_conversation_tool_calls.append(tool_call_record)
-                        self._agent.current_request_tool_calls += 1  # Track per-request tool calls
-
-                        # Add tool block to UI
-                        block = live_ui.add_tool(tool_name, args)
-
-                        # Emit tool call start event
-                        self._agent._emit_event(
-                            "tool.call_start",
-                            {
-                                "tool_name": tool_name,
-                                "tool_id": tool_id,
-                                "arguments": args,
-                                "step": self._agent.step_count,
-                            },
-                        )
-
-                        # Track execution time
-                        tool_start_time = time.time()
-
-                        # T1 boundary: preflight (permissions, hooks, argument
-                        # preparation) has passed and execution is imminent.
-                        # The intent is durable BEFORE the tool runs; a crash
-                        # after this point leaves an open operation that
-                        # recovery must treat as indeterminate.  A journal
-                        # write failure blocks execution rather than run an
-                        # unjournaled side effect.
-                        journal_turn_id = str(self._agent.execution_context.get("turn_id", "direct"))
-                        journal_args_hash = canonical_args_hash(tool_name, args)
-                        self._agent._tool_journal.tool_intent(
-                            journal_turn_id,
-                            tool_id,
+                        with tool_span(
                             tool_name,
-                            args,
-                        )
-                        self._agent._emit_event(
-                            "tool.intent",
-                            {
-                                "operation_id": f"{journal_turn_id}:{tool_id}",
-                                "tool_name": tool_name,
-                                "tool_id": tool_id,
-                                "recovery_mode": classify_recovery_mode(tool_name),
-                            },
-                        )
-
-                        # Execute tool
-                        try:
-                            tool_result = await executor.execute(tool_name, args)
-                            if tool_result.success:
-                                tool_result_text = tool_result.content
-                                tool_response_data = {
-                                    "success": True,
-                                    "content": tool_result_text,
-                                }
-                                live_ui.finish_tool(block, success=True, result=tool_result_text)
-                            else:
-                                tool_result_text = f"Error: {tool_result.error}"
-                                tool_response_data = {
-                                    "success": False,
-                                    "error": tool_result.error,
-                                }
+                            tool_call_id=tool_id,
+                            step=self._agent.step_count,
+                            arguments=tc.arguments,
+                        ) as span:
+                            if tc.argument_error:
+                                tool_result_text = f"Tool argument error: {tc.argument_error}"
+                                record_tool_denied(span, sc.DENIED_BY_ARGUMENTS, tc.argument_error)
+                                block = live_ui.add_tool(tool_name, {})
                                 live_ui.finish_tool(block, success=False, result=tool_result_text)
+                                append_canonical(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": tool_id,
+                                        "name": tool_name,
+                                        "content": tool_result_text,
+                                    }
+                                )
+                                continue
+                            assert tc.arguments is not None
+                            args = tc.arguments
 
-                            # Run PostToolUse hooks
-                            post_hook_output = await self._agent._run_post_tool_use_hooks(
+                            if tool_name not in exposed_tools or not capability.allows(tool_name):
+                                tool_result_text = f"Tool permission denied: '{tool_name}' is not authorized"
+                                record_tool_denied(span, sc.DENIED_BY_CAPABILITY, tool_result_text)
+                                block = live_ui.add_tool(tool_name, args)
+                                live_ui.finish_tool(block, success=False, result=tool_result_text)
+                                self._agent._emit_event(
+                                    "tool.call_denied",
+                                    {
+                                        "tool_name": tool_name,
+                                        "tool_id": tool_id,
+                                        "reason": tool_result_text,
+                                    },
+                                )
+                                append_canonical(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": tool_id,
+                                        "name": tool_name,
+                                        "content": tool_result_text,
+                                    }
+                                )
+                                continue
+
+                            # Hooks must inspect the same canonical arguments that
+                            # execution will use. For example, grep's common
+                            # ``path`` near-miss becomes ``paths`` here.
+                            args = executor.prepare_model_arguments(tool_name, args)
+
+                            # Run PreToolUse hooks
+                            pre_hook_output = await self._agent._run_pre_tool_use_hooks(
                                 session_id=self._agent.session_id,
                                 tool_name=tool_name,
                                 tool_input=args,
-                                tool_response=tool_response_data,
                                 tool_use_id=tool_id,
                                 project_dir=workspace_root,
                             )
 
-                            # Apply any response updates from hooks
-                            if post_hook_output.updated_response:
-                                tool_result_text = json.dumps(post_hook_output.updated_response, ensure_ascii=False)
+                            # Check hook decision
+                            if pre_hook_output.decision == HookDecision.DENY:
+                                # Tool execution denied by hook
+                                tool_result_text = (
+                                    f"Tool denied by hook: {pre_hook_output.decision_reason or 'No reason given'}"
+                                )
+                                record_tool_denied(span, sc.DENIED_BY_HOOK, pre_hook_output.decision_reason)
+                                block = live_ui.add_tool(tool_name, args)
+                                live_ui.finish_tool(block, success=False, result=tool_result_text)
+                                append_canonical(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": tool_id,
+                                        "name": tool_name,
+                                        "content": tool_result_text,
+                                    }
+                                )
+                                continue
 
-                            # Add hook feedback if any
-                            if post_hook_output.feedback:
-                                tool_result_text += f"\n\n[Hook feedback: {post_hook_output.feedback}]"
+                            # Apply any input updates from hooks
+                            if pre_hook_output.updated_input:
+                                args = {**args, **pre_hook_output.updated_input}
 
-                            # Calculate execution duration
-                            tool_duration_ms = (time.time() - tool_start_time) * 1000
+                            # Record tool call
+                            tool_call_record = {
+                                "step": self._agent.step_count,
+                                "tool": tool_name,
+                                "args": tc.raw_arguments,
+                                "timestamp": datetime.now().isoformat(),
+                            }
+                            self._agent.tool_calls_history.append(tool_call_record)
+                            self._agent.current_conversation_tool_calls.append(tool_call_record)
+                            self._agent.current_request_tool_calls += 1  # Track per-request tool calls
 
-                            # Emit tool call complete event
-                            tool_success = (
-                                tool_response_data.get("success", True)
-                                if isinstance(tool_response_data, dict)
-                                else True
-                            )
+                            # Add tool block to UI
+                            block = live_ui.add_tool(tool_name, args)
+
+                            # Emit tool call start event
                             self._agent._emit_event(
-                                "tool.call_complete",
+                                "tool.call_start",
                                 {
                                     "tool_name": tool_name,
                                     "tool_id": tool_id,
-                                    "success": tool_success,
-                                    "duration_ms": tool_duration_ms,
-                                    "result_length": len(tool_result_text),
+                                    "arguments": args,
+                                    "step": self._agent.step_count,
                                 },
                             )
 
-                            # Add tool result to messages (truncate large results)
-                            MAX_TOOL_RESULT_LEN = 8000
-                            truncated_result = tool_result_text
-                            if len(tool_result_text) > MAX_TOOL_RESULT_LEN:
-                                truncated_result = tool_result_text[:MAX_TOOL_RESULT_LEN] + "\n... [truncated]"
+                            # Track execution time
+                            tool_start_time = time.time()
 
-                            append_canonical(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_id,
-                                    "name": tool_name,
-                                    "content": truncated_result,
-                                }
-                            )
-                            # T2 boundary: the result is now part of the
-                            # conversation draft; journal the settlement.
-                            self._agent._settle_tool_operation(
+                            # T1 boundary: preflight (permissions, hooks, argument
+                            # preparation) has passed and execution is imminent.
+                            # The intent is durable BEFORE the tool runs; a crash
+                            # after this point leaves an open operation that
+                            # recovery must treat as indeterminate.  A journal
+                            # write failure blocks execution rather than run an
+                            # unjournaled side effect.
+                            journal_turn_id = str(self._agent.execution_context.get("turn_id", "direct"))
+                            journal_args_hash = canonical_args_hash(tool_name, args)
+                            self._agent._tool_journal.tool_intent(
                                 journal_turn_id,
                                 tool_id,
-                                success=bool(tool_response_data.get("success", True)),
-                                duration_ms=tool_duration_ms,
-                                args_hash=journal_args_hash,
+                                tool_name,
+                                args,
                             )
-
-                        except asyncio.CancelledError:
-                            tool_duration_ms = (time.time() - tool_start_time) * 1000
-                            # No T2 is journaled here: execution was cut short
-                            # mid-flight, so recovery keeps this intent open.
+                            recovery_mode = classify_recovery_mode(tool_name)
                             self._agent._emit_event(
-                                "tool.call_cancelled",
+                                "tool.intent",
                                 {
+                                    "operation_id": f"{journal_turn_id}:{tool_id}",
                                     "tool_name": tool_name,
                                     "tool_id": tool_id,
-                                    "success": False,
-                                    "settled": False,
-                                    "duration_ms": tool_duration_ms,
+                                    "recovery_mode": recovery_mode,
                                 },
                             )
-                            raise
-                        except Exception as e:
-                            error_msg = f"Tool {tool_name} error: {type(e).__name__}: {e}"
-                            live_ui.finish_tool(block, success=False, result=error_msg)
-
-                            # Calculate execution duration
-                            tool_duration_ms = (time.time() - tool_start_time) * 1000
-
-                            # Emit tool call error event
-                            self._agent._emit_event(
-                                "tool.call_error",
+                            set_attributes(
+                                span,
                                 {
-                                    "tool_name": tool_name,
-                                    "tool_id": tool_id,
-                                    "success": False,
-                                    "error": error_msg,
-                                    "duration_ms": tool_duration_ms,
+                                    sc.ANKALOOP_TOOL_OPERATION_ID: f"{journal_turn_id}:{tool_id}",
+                                    sc.ANKALOOP_TOOL_RECOVERY_MODE: recovery_mode,
                                 },
                             )
 
-                            append_canonical(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_id,
-                                    "name": tool_name,
-                                    "content": error_msg,
-                                }
-                            )
-                            self._agent._settle_tool_operation(
-                                journal_turn_id,
-                                tool_id,
-                                success=False,
-                                duration_ms=tool_duration_ms,
-                                error=error_msg,
-                                args_hash=journal_args_hash,
-                            )
+                            # Execute tool
+                            try:
+                                tool_result = await executor.execute(tool_name, args)
+                                if tool_result.success:
+                                    tool_result_text = tool_result.content
+                                    tool_response_data = {
+                                        "success": True,
+                                        "content": tool_result_text,
+                                    }
+                                    live_ui.finish_tool(block, success=True, result=tool_result_text)
+                                else:
+                                    tool_result_text = f"Error: {tool_result.error}"
+                                    tool_response_data = {
+                                        "success": False,
+                                        "error": tool_result.error,
+                                    }
+                                    live_ui.finish_tool(block, success=False, result=tool_result_text)
+
+                                # Run PostToolUse hooks
+                                post_hook_output = await self._agent._run_post_tool_use_hooks(
+                                    session_id=self._agent.session_id,
+                                    tool_name=tool_name,
+                                    tool_input=args,
+                                    tool_response=tool_response_data,
+                                    tool_use_id=tool_id,
+                                    project_dir=workspace_root,
+                                )
+
+                                # Apply any response updates from hooks
+                                if post_hook_output.updated_response:
+                                    tool_result_text = json.dumps(post_hook_output.updated_response, ensure_ascii=False)
+
+                                # Add hook feedback if any
+                                if post_hook_output.feedback:
+                                    tool_result_text += f"\n\n[Hook feedback: {post_hook_output.feedback}]"
+
+                                # Calculate execution duration
+                                tool_duration_ms = (time.time() - tool_start_time) * 1000
+
+                                # Emit tool call complete event
+                                tool_success = (
+                                    tool_response_data.get("success", True)
+                                    if isinstance(tool_response_data, dict)
+                                    else True
+                                )
+                                self._agent._emit_event(
+                                    "tool.call_complete",
+                                    {
+                                        "tool_name": tool_name,
+                                        "tool_id": tool_id,
+                                        "success": tool_success,
+                                        "duration_ms": tool_duration_ms,
+                                        "result_length": len(tool_result_text),
+                                    },
+                                )
+                                record_tool_result(span, success=bool(tool_success), result=tool_result_text)
+
+                                # Add tool result to messages (truncate large results)
+                                MAX_TOOL_RESULT_LEN = 8000
+                                truncated_result = tool_result_text
+                                if len(tool_result_text) > MAX_TOOL_RESULT_LEN:
+                                    truncated_result = tool_result_text[:MAX_TOOL_RESULT_LEN] + "\n... [truncated]"
+
+                                append_canonical(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": tool_id,
+                                        "name": tool_name,
+                                        "content": truncated_result,
+                                    }
+                                )
+                                # T2 boundary: the result is now part of the
+                                # conversation draft; journal the settlement.
+                                self._agent._settle_tool_operation(
+                                    journal_turn_id,
+                                    tool_id,
+                                    success=bool(tool_response_data.get("success", True)),
+                                    duration_ms=tool_duration_ms,
+                                    args_hash=journal_args_hash,
+                                )
+
+                            except asyncio.CancelledError:
+                                tool_duration_ms = (time.time() - tool_start_time) * 1000
+                                # No T2 is journaled here: execution was cut short
+                                # mid-flight, so recovery keeps this intent open.
+                                self._agent._emit_event(
+                                    "tool.call_cancelled",
+                                    {
+                                        "tool_name": tool_name,
+                                        "tool_id": tool_id,
+                                        "success": False,
+                                        "settled": False,
+                                        "duration_ms": tool_duration_ms,
+                                    },
+                                )
+                                raise
+                            except Exception as e:
+                                error_msg = f"Tool {tool_name} error: {type(e).__name__}: {e}"
+                                live_ui.finish_tool(block, success=False, result=error_msg)
+
+                                # Calculate execution duration
+                                tool_duration_ms = (time.time() - tool_start_time) * 1000
+
+                                # Emit tool call error event
+                                self._agent._emit_event(
+                                    "tool.call_error",
+                                    {
+                                        "tool_name": tool_name,
+                                        "tool_id": tool_id,
+                                        "success": False,
+                                        "error": error_msg,
+                                        "duration_ms": tool_duration_ms,
+                                    },
+                                )
+                                record_error(span, e)
+
+                                append_canonical(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": tool_id,
+                                        "name": tool_name,
+                                        "content": error_msg,
+                                    }
+                                )
+                                self._agent._settle_tool_operation(
+                                    journal_turn_id,
+                                    tool_id,
+                                    success=False,
+                                    duration_ms=tool_duration_ms,
+                                    error=error_msg,
+                                    args_hash=journal_args_hash,
+                                )
 
                 continue
             else:

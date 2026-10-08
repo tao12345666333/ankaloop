@@ -207,6 +207,31 @@ class AutomationConfig:
 
 
 @dataclass
+class TracingConfig:
+    """OpenTelemetry tracing configuration.
+
+    Standard ``OTEL_*`` environment variables take precedence over these values
+    (see ``ankaloop.tracing``).
+    """
+
+    enabled: bool = False
+    exporter: str = "otlp"
+    """One of ``otlp``, ``console``, ``none``."""
+    endpoint: str | None = None
+    """OTLP base endpoint, e.g. ``http://localhost:4318``."""
+    protocol: str = "http/protobuf"
+    """``http/protobuf`` or ``grpc``."""
+    service_name: str = "ankaloop"
+    sample_ratio: float = 1.0
+    capture_content: bool = False
+    """Record prompts, model output, and tool arguments/results on spans."""
+    content_max_chars: int = 4000
+    compat: list[str] = field(default_factory=list)
+    """Extra attribute dialects to dual-write, e.g. ``["openinference"]``."""
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class AnkaloopConfig:
     servers: dict[str, Server]
     chat: ChatConfig | None = None
@@ -214,6 +239,7 @@ class AnkaloopConfig:
     server: ServerConfig | None = None
     telegram: TelegramConfig | None = None
     automation: AutomationConfig | None = None
+    tracing: TracingConfig | None = None
 
 
 _DEFAULT = {
@@ -708,6 +734,8 @@ def load_config() -> AnkaloopConfig:
     telegram = apply_env_overrides(telegram)
     automation_data = data.get("automation")
     automation = _decode_automation(automation_data) if isinstance(automation_data, dict) else None
+    tracing_data = data.get("tracing")
+    tracing = _decode_tracing(tracing_data) if isinstance(tracing_data, dict) else None
     return AnkaloopConfig(
         servers=servers,
         chat=chat,
@@ -715,6 +743,7 @@ def load_config() -> AnkaloopConfig:
         server=server,
         telegram=telegram,
         automation=automation,
+        tracing=tracing,
     )
 
 
@@ -984,6 +1013,9 @@ def save_config(cfg: AnkaloopConfig) -> Path:
     automation_obj = _encode_automation(cfg.automation)
     if automation_obj is not None:
         data["automation"] = automation_obj
+    tracing_obj = _encode_tracing(cfg.tracing)
+    if tracing_obj is not None:
+        data["tracing"] = tracing_obj
     with open(CONFIG_FILE, "wb") as f:
         tomli_w.dump(data, f)
     return CONFIG_FILE
@@ -1068,4 +1100,53 @@ def _encode_automation(cfg: AutomationConfig | None) -> dict | None:
     if jobs:
         out["jobs"] = jobs
 
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Tracing config decode / encode
+# ---------------------------------------------------------------------------
+
+
+def _decode_tracing(raw: Mapping[str, object] | None) -> TracingConfig | None:
+    """Decode [tracing] section from TOML."""
+    if raw is None:
+        return None
+    defaults = TracingConfig()
+    endpoint = raw.get("endpoint")
+    compat_raw = raw.get("compat")
+    headers_raw = raw.get("headers")
+    return TracingConfig(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        exporter=str(raw.get("exporter", defaults.exporter)),
+        endpoint=str(endpoint) if endpoint else None,
+        protocol=str(raw.get("protocol", defaults.protocol)),
+        service_name=str(raw.get("service_name", defaults.service_name)),
+        sample_ratio=float(str(raw.get("sample_ratio", defaults.sample_ratio))),
+        capture_content=bool(raw.get("capture_content", defaults.capture_content)),
+        content_max_chars=int(str(raw.get("content_max_chars", defaults.content_max_chars))),
+        compat=[str(c) for c in compat_raw] if isinstance(compat_raw, list) else [],
+        headers={str(k): str(v) for k, v in headers_raw.items()} if isinstance(headers_raw, dict) else {},
+    )
+
+
+def _encode_tracing(cfg: TracingConfig | None) -> dict | None:
+    """Encode TracingConfig to TOML-compatible dict."""
+    if cfg is None:
+        return None
+    out: dict[str, Any] = {
+        "enabled": bool(cfg.enabled),
+        "exporter": cfg.exporter,
+        "protocol": cfg.protocol,
+        "service_name": cfg.service_name,
+        "sample_ratio": float(cfg.sample_ratio),
+        "capture_content": bool(cfg.capture_content),
+        "content_max_chars": int(cfg.content_max_chars),
+    }
+    if cfg.endpoint:
+        out["endpoint"] = cfg.endpoint
+    if cfg.compat:
+        out["compat"] = list(cfg.compat)
+    if cfg.headers:
+        out["headers"] = dict(cfg.headers)
     return out

@@ -16,6 +16,8 @@ from .config import ChatConfig
 from .llm import ProviderError
 from .session_state import CompactionCheckpoint
 from .tool_execution import ToolCallProtocolError
+from .tracing import internal_span, set_attributes, tool_spec_names
+from .tracing import semconv as sc
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -130,23 +132,31 @@ class TurnService:
                 # `/model use` or config-file edit affects the next turn, but
                 # cannot mix providers between chat, compaction, and memory.
                 turn_config = self._agent._resolve_turn_config()
-                history_to_add = draft.model_context(turn_messages)
-                conversation_tokens = self._agent._estimate_tokens(history_to_add)
-                system_prompt = self._agent._get_system_prompt(
-                    work_dir,
-                    user_input=user_input,
-                    conversation_tokens=conversation_tokens,
-                    cfg=turn_config,
-                )
-                messages = [{"role": "system", "content": system_prompt}]
+                with internal_span(sc.SPAN_PREPARE_CONTEXT) as prepare_span:
+                    history_to_add = draft.model_context(turn_messages)
+                    conversation_tokens = self._agent._estimate_tokens(history_to_add)
+                    system_prompt = self._agent._get_system_prompt(
+                        work_dir,
+                        user_input=user_input,
+                        conversation_tokens=conversation_tokens,
+                        cfg=turn_config,
+                    )
+                    messages = [{"role": "system", "content": system_prompt}]
 
-                # Build tools before compaction so their schemas are included in
-                # the request-size decision.
-                tools, tool_registry = await self._agent._build_tools_and_registry(
-                    user_input=user_input,
-                    conversation_history=history_to_add,
-                    cfg=turn_config,
-                )
+                    # Build tools before compaction so their schemas are included in
+                    # the request-size decision.
+                    tools, tool_registry = await self._agent._build_tools_and_registry(
+                        user_input=user_input,
+                        conversation_history=history_to_add,
+                        cfg=turn_config,
+                    )
+                    set_attributes(
+                        prepare_span,
+                        {
+                            sc.ANKALOOP_CONTEXT_TOKENS: conversation_tokens,
+                            sc.ANKALOOP_TOOLS_EXPOSED: tool_spec_names(tools),
+                        },
+                    )
 
                 # Apply compaction if context is too large
                 cfg = turn_config
@@ -190,20 +200,30 @@ class TurnService:
                         )
                         checkpoint_input = deepcopy(draft.checkpoint.context) if draft.checkpoint is not None else []
                         checkpoint_input.extend(deepcopy(draft.messages[previous_message_count:covered_message_count]))
-                        checkpoint_context, compaction_result = await asyncio.to_thread(
-                            compactor.compact_checkpoint,
-                            checkpoint_input,
-                        )
-                        draft.checkpoint = CompactionCheckpoint(
-                            context=checkpoint_context,
-                            covered_message_count=covered_message_count,
-                            covered_turn_count=covered_turn_count,
-                            generation=(draft.checkpoint.generation + 1 if draft.checkpoint is not None else 1),
-                            strategy=compaction_result.strategy_used.value,
-                            strategy_version=1,
-                            original_tokens=compaction_result.original_tokens,
-                            compacted_tokens=compaction_result.compacted_tokens,
-                        )
+                        with internal_span(sc.SPAN_COMPACT_CONTEXT) as compact_span:
+                            checkpoint_context, compaction_result = await asyncio.to_thread(
+                                compactor.compact_checkpoint,
+                                checkpoint_input,
+                            )
+                            draft.checkpoint = CompactionCheckpoint(
+                                context=checkpoint_context,
+                                covered_message_count=covered_message_count,
+                                covered_turn_count=covered_turn_count,
+                                generation=(draft.checkpoint.generation + 1 if draft.checkpoint is not None else 1),
+                                strategy=compaction_result.strategy_used.value,
+                                strategy_version=1,
+                                original_tokens=compaction_result.original_tokens,
+                                compacted_tokens=compaction_result.compacted_tokens,
+                            )
+                            set_attributes(
+                                compact_span,
+                                {
+                                    sc.ANKALOOP_COMPACTION_STRATEGY: draft.checkpoint.strategy,
+                                    sc.ANKALOOP_COMPACTION_INPUT_TOKENS: compaction_result.original_tokens,
+                                    sc.ANKALOOP_COMPACTION_OUTPUT_TOKENS: compaction_result.compacted_tokens,
+                                    sc.ANKALOOP_COMPACTION_GENERATION: draft.checkpoint.generation,
+                                },
+                            )
                         self._agent._emit_event(
                             "context.compacted",
                             {

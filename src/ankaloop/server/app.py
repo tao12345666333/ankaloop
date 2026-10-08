@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from .._version import __version__
 from ..application_services import ApplicationServices
 from ..llm import ProviderError, ProviderErrorKind
+from ..tracing import attach_carrier, carrier_from_headers, configure_tracing_from_config, shutdown_tracing
 from .config import AuthConfig, ServerConfig, get_server_config, set_server_config
 from .events import router as events_router
 from .routes import agents_router, health_router, sessions_router, tools_router
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     # Startup
     config = get_server_config()
+    configure_tracing_from_config()
     print(f"🚀 AnkaLoop Server v{__version__} starting...")
     print(f"   Host: {config.host}")
     print(f"   Port: {config.port}")
@@ -68,6 +70,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if skill_watcher:
         await skill_watcher.stop()
 
+    shutdown_tracing()
     print("\n👋 AnkaLoop Server shutting down...")
 
 
@@ -106,6 +109,12 @@ def create_app(
     )
     app.state.server_config = cfg
     app.state.application_services = application_services
+
+    @app.middleware("http")
+    async def propagate_trace_context(request: Request, call_next):
+        """Join an incoming W3C ``traceparent`` so turn spans nest under the caller."""
+        with attach_carrier(carrier_from_headers(request.headers)):
+            return await call_next(request)
 
     # Configure CORS
     if cfg.cors.enabled:

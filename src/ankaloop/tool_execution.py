@@ -21,6 +21,8 @@ from .mcp_client import call_mcp_tool
 from .mcp_naming import is_mcp_tool_name
 from .task import TaskManager, TaskTool
 from .tools import ToolRegistry, ToolResult
+from .tracing import current_span, set_attributes
+from .tracing import semconv as sc
 
 logger = logging.getLogger(__name__)
 
@@ -370,6 +372,10 @@ class ToolExecutor:
         server = self.config.servers.get(server_name)
         if server is None:
             return ToolResult(success=False, content="", error=f"Unknown MCP server {server_name}")
+        set_attributes(
+            current_span(),
+            {sc.GEN_AI_TOOL_TYPE: sc.TOOL_TYPE_EXTENSION, sc.ANKALOOP_MCP_SERVER: server_name},
+        )
         response = await call_mcp_tool(server, inner_name, arguments)
         parts = [item.get("text", "") for item in response.get("content", []) or [] if item.get("type") == "text"]
         content = "\n\n".join(parts) or json.dumps(response, ensure_ascii=False)

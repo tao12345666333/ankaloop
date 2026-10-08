@@ -101,6 +101,7 @@ anka telegram setup
 | **Research** | Built-in web search/fetch plus MCP integration over stdio and HTTP/SSE |
 | **Extensions** | Skills, slash commands, hooks, custom YAML agent specs, and an event bus |
 | **Automation** | Cron-compatible jobs for systemd, Kubernetes, and external schedulers |
+| **Observability** | OpenTelemetry traces (GenAI semantic conventions) for turns, model calls, tools, hooks, and subagents |
 
 ## How it fits together
 
@@ -218,8 +219,24 @@ with strict function-name requirements.
 
 </details>
 
+<details>
+<summary><strong>Tracing (OpenTelemetry)</strong></summary>
+
+```toml
+[tracing]
+enabled = true
+exporter = "otlp"                  # or "console"
+endpoint = "http://localhost:4318"
+capture_content = false            # opt in to record prompts / tool arguments
+```
+
+Install the exporter with `pip install "ankaloop[tracing]"`. Standard `OTEL_*` environment
+variables override the TOML values. See the [tracing guide](docs/tracing.md).
+
+</details>
+
 See the [quick-start guide](docs/QUICK_START.md), [skills and commands guide](docs/skills-and-commands.md),
-and [hooks guide](docs/hooks.md) for more configuration examples.
+[hooks guide](docs/hooks.md), and [tracing guide](docs/tracing.md) for more configuration examples.
 
 ## Multi-agent runtime
 
