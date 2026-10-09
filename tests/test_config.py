@@ -471,3 +471,59 @@ def test_decode_encode_top_level_dynamic_credentials_roundtrip():
     assert encoded is not None
     assert encoded["api_key_command"] == "get-token"
     assert encoded["auth_header"] == "Authorization: Bearer {api_key}"
+
+
+def test_decode_encode_chat_reasoning_effort_roundtrip():
+    raw = {
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "test-model",
+        "reasoning_effort": "high",
+    }
+    chat = config_module._decode_chat(raw)
+    assert chat is not None
+    assert chat.reasoning_effort == "high"
+    encoded = config_module._encode_chat(chat)
+    assert encoded["reasoning_effort"] == "high"
+
+
+def test_decode_chat_reasoning_effort_defaults_to_none():
+    chat = config_module._decode_chat({"model": "test-model"})
+    assert chat is not None
+    assert chat.reasoning_effort is None
+    encoded = config_module._encode_chat(chat)
+    assert "reasoning_effort" not in encoded
+
+
+def test_decode_encode_provider_reasoning_effort_roundtrip():
+    raw = {
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "test-model",
+        "api_type": "openai",
+        "reasoning_effort": "low",
+    }
+    provider = config_module._decode_chat_provider(raw)
+    assert provider.reasoning_effort == "low"
+    encoded = config_module._encode_chat_provider(provider)
+    assert encoded["reasoning_effort"] == "low"
+
+
+def test_active_provider_applies_reasoning_effort():
+    raw = {
+        "active_provider": "openrouter",
+        "providers": {
+            "openrouter": {
+                "base_url": "https://openrouter.ai/api/v1",
+                "model": "test-model",
+                "api_type": "openai",
+                "reasoning_effort": "high",
+            },
+            "other": {
+                "base_url": "https://other.example/v1",
+                "model": "other-model",
+                "api_type": "openai",
+            },
+        },
+    }
+    chat = config_module._decode_chat(raw)
+    assert chat is not None
+    assert chat.reasoning_effort == "high"

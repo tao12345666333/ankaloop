@@ -19,6 +19,7 @@ from ankaloop.llm import (
     ProviderErrorKind,
     classify_provider_error,
     create_llm_client,
+    normalize_reasoning_effort,
 )
 
 
@@ -251,6 +252,168 @@ class TestCreateLLMClient:
 
         with pytest.raises(ValueError, match="no API key"):
             create_llm_client(cfg)
+
+
+class TestReasoningEffort:
+    """Tests for reasoning_effort normalization and request injection."""
+
+    def test_normalize_accepts_supported_levels(self):
+        for level in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            assert normalize_reasoning_effort(level) == level
+
+    def test_normalize_strips_case_and_whitespace(self):
+        assert normalize_reasoning_effort(" High ") == "high"
+
+    def test_normalize_auto_and_unset_mean_provider_default(self):
+        assert normalize_reasoning_effort(None) is None
+        assert normalize_reasoning_effort("") is None
+        assert normalize_reasoning_effort("auto") is None
+
+    def test_normalize_rejects_unknown_level(self):
+        with pytest.raises(ValueError, match="reasoning_effort"):
+            normalize_reasoning_effort("extreme")
+
+    def test_create_llm_client_uses_config_reasoning_effort(self):
+        cfg = ChatConfig(model="gpt-5.5", api_key="test-key", reasoning_effort="high")
+
+        client = create_llm_client(cfg)
+
+        assert client.reasoning_effort == "high"
+
+    def test_create_llm_client_reasoning_effort_env_fallback(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setenv("ANKA_REASONING_EFFORT", "low")
+
+        client = create_llm_client(None)
+
+        assert client.reasoning_effort == "low"
+
+    def test_create_llm_client_config_takes_precedence_over_env(self, monkeypatch):
+        monkeypatch.setenv("ANKA_REASONING_EFFORT", "low")
+        cfg = ChatConfig(model="gpt-5.5", api_key="test-key", reasoning_effort="high")
+
+        client = create_llm_client(cfg)
+
+        assert client.reasoning_effort == "high"
+
+    def test_create_llm_client_rejects_invalid_reasoning_effort(self):
+        cfg = ChatConfig(model="gpt-5.5", api_key="test-key", reasoning_effort="extreme")
+
+        with pytest.raises(ValueError, match="reasoning_effort"):
+            create_llm_client(cfg)
+
+    def _capture_completion(self, client) -> dict:
+        captured: dict = {}
+
+        def completion(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="done", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            )
+
+        client.client.completion = completion
+        return captured
+
+    def test_chat_injects_configured_reasoning_effort(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="gpt-5.5",
+            reasoning_effort="high",
+        )
+        captured = self._capture_completion(client)
+
+        client.chat([{"role": "user", "content": "hello"}])
+
+        assert captured["reasoning_effort"] == "high"
+
+    def test_chat_omits_reasoning_effort_by_default(self):
+        client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
+        captured = self._capture_completion(client)
+
+        client.chat([{"role": "user", "content": "hello"}])
+
+        assert "reasoning_effort" not in captured
+
+    def test_chat_call_kwargs_override_configured_effort(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="gpt-5.5",
+            reasoning_effort="high",
+        )
+        captured = self._capture_completion(client)
+
+        client.chat([{"role": "user", "content": "hello"}], reasoning_effort="low")
+
+        assert captured["reasoning_effort"] == "low"
+
+    @pytest.mark.asyncio
+    async def test_achat_injects_configured_reasoning_effort(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="gpt-5.5",
+            reasoning_effort="minimal",
+        )
+        captured: dict = {}
+
+        async def acompletion(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="done", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            )
+
+        client.client.acompletion = acompletion
+
+        await client.achat([{"role": "user", "content": "hello"}])
+
+        assert captured["reasoning_effort"] == "minimal"
+
+    def test_responses_client_maps_effort_to_reasoning_param(self):
+        client = OpenAIResponsesClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="gpt-5.5",
+            reasoning_effort="high",
+        )
+        captured: dict = {}
+
+        def responses(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output=[], stop_reason="stop", usage=None)
+
+        client.client.responses = responses
+
+        client.chat([{"role": "user", "content": "hello"}])
+
+        assert captured["reasoning"] == {"effort": "high"}
+
+    def test_responses_client_omits_reasoning_by_default(self):
+        client = OpenAIResponsesClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
+        captured: dict = {}
+
+        def responses(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output=[], stop_reason="stop", usage=None)
+
+        client.client.responses = responses
+
+        client.chat([{"role": "user", "content": "hello"}])
+
+        assert "reasoning" not in captured
 
 
 class TestOpenAIClient:
