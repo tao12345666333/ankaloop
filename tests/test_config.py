@@ -386,3 +386,144 @@ def test_active_provider_applies_extra_headers():
     chat = config_module._decode_chat(raw)
     assert chat is not None
     assert chat.extra_headers == {"X-Custom": "yes"}
+
+
+def test_decode_encode_provider_dynamic_credentials_roundtrip():
+    raw = {
+        "base_url": "https://gateway.example",
+        "model": "test-model",
+        "api_type": "anthropic",
+        "api_key_command": "get-token --name gateway",
+        "api_key_command_ttl_seconds": 120,
+        "auth_header": "Authorization: Bearer {api_key}",
+    }
+
+    provider = config_module._decode_chat_provider(raw)
+    assert provider.api_key_command == "get-token --name gateway"
+    assert provider.api_key_command_ttl_seconds == 120.0
+    assert provider.auth_header == "Authorization: Bearer {api_key}"
+
+    encoded = config_module._encode_chat_provider(provider)
+    assert encoded["api_key_command"] == "get-token --name gateway"
+    assert encoded["api_key_command_ttl_seconds"] == 120.0
+    assert encoded["auth_header"] == "Authorization: Bearer {api_key}"
+
+
+def test_active_provider_applies_dynamic_credentials():
+    chat = config_module._decode_chat(
+        {
+            "active_provider": "gateway",
+            "providers": {
+                "gateway": {
+                    "base_url": "https://gateway.example",
+                    "model": "test-model",
+                    "api_type": "anthropic",
+                    "api_key_command": "get-token",
+                    "auth_header": "Authorization: Bearer {api_key}",
+                },
+            },
+        }
+    )
+
+    assert chat is not None
+    assert chat.api_key_command == "get-token"
+    assert chat.auth_header == "Authorization: Bearer {api_key}"
+
+
+def test_active_provider_skips_shared_key_fallback_when_command_set():
+    chat = config_module._decode_chat(
+        {
+            "active_provider": "dynamic",
+            "providers": {
+                "credential-source": {
+                    "base_url": "https://provider.example/v1",
+                    "model": "first-model",
+                    "api_key": "shared-key",
+                },
+                "dynamic": {
+                    "base_url": "https://provider.example/v1",
+                    "model": "second-model",
+                    "api_key_command": "get-token",
+                },
+            },
+        }
+    )
+
+    assert chat is not None
+    assert chat.api_key is None
+    assert chat.api_key_command == "get-token"
+
+
+def test_decode_encode_top_level_dynamic_credentials_roundtrip():
+    chat = config_module._decode_chat(
+        {
+            "base_url": "https://gateway.example",
+            "model": "test-model",
+            "api_key_command": "get-token",
+            "auth_header": "Authorization: Bearer {api_key}",
+        }
+    )
+    assert chat is not None
+    assert chat.api_key_command == "get-token"
+    assert chat.auth_header == "Authorization: Bearer {api_key}"
+
+    encoded = config_module._encode_chat(chat)
+    assert encoded is not None
+    assert encoded["api_key_command"] == "get-token"
+    assert encoded["auth_header"] == "Authorization: Bearer {api_key}"
+
+
+def test_decode_encode_chat_reasoning_effort_roundtrip():
+    raw = {
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "test-model",
+        "reasoning_effort": "high",
+    }
+    chat = config_module._decode_chat(raw)
+    assert chat is not None
+    assert chat.reasoning_effort == "high"
+    encoded = config_module._encode_chat(chat)
+    assert encoded["reasoning_effort"] == "high"
+
+
+def test_decode_chat_reasoning_effort_defaults_to_none():
+    chat = config_module._decode_chat({"model": "test-model"})
+    assert chat is not None
+    assert chat.reasoning_effort is None
+    encoded = config_module._encode_chat(chat)
+    assert "reasoning_effort" not in encoded
+
+
+def test_decode_encode_provider_reasoning_effort_roundtrip():
+    raw = {
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "test-model",
+        "api_type": "openai",
+        "reasoning_effort": "low",
+    }
+    provider = config_module._decode_chat_provider(raw)
+    assert provider.reasoning_effort == "low"
+    encoded = config_module._encode_chat_provider(provider)
+    assert encoded["reasoning_effort"] == "low"
+
+
+def test_active_provider_applies_reasoning_effort():
+    raw = {
+        "active_provider": "openrouter",
+        "providers": {
+            "openrouter": {
+                "base_url": "https://openrouter.ai/api/v1",
+                "model": "test-model",
+                "api_type": "openai",
+                "reasoning_effort": "high",
+            },
+            "other": {
+                "base_url": "https://other.example/v1",
+                "model": "other-model",
+                "api_type": "openai",
+            },
+        },
+    }
+    chat = config_module._decode_chat(raw)
+    assert chat is not None
+    assert chat.reasoning_effort == "high"

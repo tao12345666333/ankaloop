@@ -73,6 +73,19 @@ class ChatProviderConfig:
     max_retries: int | None = None
     retry_base_delay_seconds: float | None = None
     extra_headers: dict[str, str] | None = None  # custom HTTP headers (e.g. OpenRouter attribution)
+    # Dynamic credentials: shell command (executed via the shell, so pipes and
+    # environment expansion work; quote it as a shell command line) that prints
+    # a short-lived API key/token. Takes precedence over the static ``api_key``;
+    # results are cached per command string, so providers sharing a command
+    # share one token (JWTs until their exp claim or
+    # ``api_key_command_ttl_seconds``, whichever is sooner; other tokens for
+    # ``api_key_command_ttl_seconds``). Not cleared on config reload.
+    api_key_command: str | None = None
+    api_key_command_ttl_seconds: float | None = None
+    # Explicit credential header template, e.g. "Authorization: Bearer {api_key}",
+    # for gateways that reject the provider SDK's default credential header.
+    auth_header: str | None = None
+    reasoning_effort: str | None = None  # reasoning effort level sent with model requests
 
 
 @dataclass
@@ -81,9 +94,17 @@ class ChatConfig:
     model: str | None = None
     api_key: str | None = None
     api_type: str | None = None  # any-llm provider ID, or "openai_responses"
+    # Dynamic credentials and explicit credential header; see ChatProviderConfig.
+    api_key_command: str | None = None
+    api_key_command_ttl_seconds: float | None = None
+    auth_header: str | None = None
 
     # Model configuration (from models.dev or custom)
     model_config: ModelConfig | None = None
+
+    # Reasoning effort level for models that support it. Unset or "auto" keeps the
+    # provider default; otherwise forwarded to every model request.
+    reasoning_effort: str | None = None
 
     # Provider reliability policy. Retries are only attempted for transient
     # failures and never after a streaming response emitted content.
@@ -396,6 +417,10 @@ def _decode_chat_provider(raw: Mapping[str, object]) -> ChatProviderConfig:
     request_timeout_seconds = raw.get("request_timeout_seconds")
     max_retries = raw.get("max_retries")
     retry_base_delay_seconds = raw.get("retry_base_delay_seconds")
+    api_key_command = raw.get("api_key_command")
+    api_key_command_ttl_seconds = raw.get("api_key_command_ttl_seconds")
+    auth_header = raw.get("auth_header")
+    reasoning_effort = raw.get("reasoning_effort")
     raw_model_config = raw.get("model_config")
     model_config = _decode_model_config(raw_model_config) if isinstance(raw_model_config, dict) else None
     raw_extra_headers = raw.get("extra_headers")
@@ -414,6 +439,12 @@ def _decode_chat_provider(raw: Mapping[str, object]) -> ChatProviderConfig:
             float(str(retry_base_delay_seconds)) if retry_base_delay_seconds is not None else None
         ),
         extra_headers=extra_headers,
+        api_key_command=str(api_key_command) if api_key_command is not None else None,
+        api_key_command_ttl_seconds=(
+            float(str(api_key_command_ttl_seconds)) if api_key_command_ttl_seconds is not None else None
+        ),
+        auth_header=str(auth_header) if auth_header is not None else None,
+        reasoning_effort=str(reasoning_effort) if reasoning_effort is not None else None,
     )
 
 
@@ -427,7 +458,7 @@ def _apply_active_provider(chat: ChatConfig) -> ChatConfig:
     chat.base_url = provider.base_url
     chat.model = provider.model
     chat.api_key = provider.api_key
-    if chat.api_key is None and provider.base_url:
+    if chat.api_key is None and provider.api_key_command is None and provider.base_url:
         chat.api_key = next(
             (
                 candidate.api_key
@@ -437,6 +468,9 @@ def _apply_active_provider(chat: ChatConfig) -> ChatConfig:
             None,
         )
     chat.api_type = provider.api_type
+    chat.api_key_command = provider.api_key_command
+    chat.api_key_command_ttl_seconds = provider.api_key_command_ttl_seconds
+    chat.auth_header = provider.auth_header
     chat.model_config = provider.model_config
     if provider.request_timeout_seconds is not None:
         chat.request_timeout_seconds = provider.request_timeout_seconds
@@ -446,6 +480,8 @@ def _apply_active_provider(chat: ChatConfig) -> ChatConfig:
         chat.retry_base_delay_seconds = provider.retry_base_delay_seconds
     if provider.extra_headers is not None:
         chat.extra_headers = provider.extra_headers
+    if provider.reasoning_effort is not None:
+        chat.reasoning_effort = provider.reasoning_effort
     return chat
 
 
@@ -456,10 +492,14 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
     model = raw.get("model")
     api_key = raw.get("api_key")
     api_type = raw.get("api_type")
+    api_key_command = raw.get("api_key_command")
+    api_key_command_ttl_seconds = raw.get("api_key_command_ttl_seconds")
+    auth_header = raw.get("auth_header")
     request_timeout_seconds = raw.get("request_timeout_seconds", 120.0)
     turn_deadline_raw = raw.get("turn_deadline_seconds", 900.0)
     max_retries = raw.get("max_retries", 2)
     retry_base_delay_seconds = raw.get("retry_base_delay_seconds", 0.5)
+    reasoning_effort = raw.get("reasoning_effort")
     tool_loop_limit = raw.get("tool_loop_limit")
     bash_tool_limit = raw.get("bash_tool_limit")
     default_max_lines = raw.get("default_max_lines")
@@ -495,6 +535,11 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
         model=str(model) if model is not None else None,
         api_key=str(api_key) if api_key is not None else None,
         api_type=str(api_type) if api_type is not None else None,
+        api_key_command=str(api_key_command) if api_key_command is not None else None,
+        api_key_command_ttl_seconds=(
+            float(str(api_key_command_ttl_seconds)) if api_key_command_ttl_seconds is not None else None
+        ),
+        auth_header=str(auth_header) if auth_header is not None else None,
         model_config=model_config,
         request_timeout_seconds=float(str(request_timeout_seconds)),
         turn_deadline_seconds=float(str(turn_deadline_raw)),
@@ -515,6 +560,7 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
         enable_queue=bool(enable_queue) if enable_queue is not None else None,
         max_queue_size=int(str(max_queue_size)) if max_queue_size is not None else None,
         extra_headers=extra_headers,
+        reasoning_effort=str(reasoning_effort) if reasoning_effort is not None else None,
     )
     return _apply_active_provider(chat)
 
@@ -791,6 +837,12 @@ def _encode_chat_provider(p: ChatProviderConfig) -> dict:
         out["api_key"] = p.api_key
     if p.api_type:
         out["api_type"] = p.api_type
+    if p.api_key_command:
+        out["api_key_command"] = p.api_key_command
+    if p.api_key_command_ttl_seconds is not None:
+        out["api_key_command_ttl_seconds"] = float(p.api_key_command_ttl_seconds)
+    if p.auth_header:
+        out["auth_header"] = p.auth_header
     if p.request_timeout_seconds is not None:
         out["request_timeout_seconds"] = float(p.request_timeout_seconds)
     if p.max_retries is not None:
@@ -802,6 +854,8 @@ def _encode_chat_provider(p: ChatProviderConfig) -> dict:
         out["model_config"] = model_config_dict
     if p.extra_headers:
         out["extra_headers"] = dict(p.extra_headers)
+    if p.reasoning_effort:
+        out["reasoning_effort"] = p.reasoning_effort
     return out
 
 
@@ -818,9 +872,17 @@ def _encode_chat(c: ChatConfig | None) -> dict | None:
         out["api_key"] = c.api_key
     if c.api_type and not provider_profiles_enabled:
         out["api_type"] = c.api_type
+    if c.api_key_command and not provider_profiles_enabled:
+        out["api_key_command"] = c.api_key_command
+    if c.api_key_command_ttl_seconds is not None and not provider_profiles_enabled:
+        out["api_key_command_ttl_seconds"] = float(c.api_key_command_ttl_seconds)
+    if c.auth_header and not provider_profiles_enabled:
+        out["auth_header"] = c.auth_header
     out["request_timeout_seconds"] = float(c.request_timeout_seconds)
     out["max_retries"] = int(c.max_retries)
     out["retry_base_delay_seconds"] = float(c.retry_base_delay_seconds)
+    if c.reasoning_effort and not provider_profiles_enabled:
+        out["reasoning_effort"] = c.reasoning_effort
     # Model config
     model_config_dict = _encode_model_config(c.model_config)
     if model_config_dict and not provider_profiles_enabled:
