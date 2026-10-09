@@ -281,6 +281,28 @@ class LLMResponse:
     usage: TokenUsage | None = None
 
 
+# Reasoning effort levels accepted by any-llm and forwarded to providers.
+REASONING_EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "auto"})
+
+
+def normalize_reasoning_effort(value: str | None) -> str | None:
+    """Normalize a configured reasoning effort level.
+
+    Returns ``None`` for unset values and ``"auto"`` (the provider default: send
+    nothing). Raises ``ValueError`` for unsupported levels so configuration
+    mistakes surface at startup instead of at request time.
+    """
+    if value is None:
+        return None
+    level = str(value).strip().lower()
+    if not level or level == "auto":
+        return None
+    if level not in REASONING_EFFORT_LEVELS:
+        allowed = ", ".join(sorted(REASONING_EFFORT_LEVELS))
+        raise ValueError(f"Unsupported reasoning_effort {value!r}; expected one of: {allowed}")
+    return level
+
+
 def _usage_value(usage: Any, name: str) -> int:
     """Read an integer usage field from SDK objects or dictionaries."""
     if usage is None:
@@ -340,6 +362,7 @@ class BaseLLMClient(ABC):
     # Configured per-request timeout, forwarded to non-streaming calls on
     # providers with native timeout support (see _nonstreaming_request_timeout).
     _request_timeout: float | None
+    reasoning_effort: str | None = None  # class-level default; __init__ normalizes configured values
 
     def _configure_request_limits(
         self,
@@ -475,6 +498,7 @@ class AnyLLMClient(BaseLLMClient):
         model_config: ModelConfig | None = None,
         extra_headers: dict[str, str] | None = None,
         request_timeout: float | None = None,
+        reasoning_effort: str | None = None,
     ):
         from any_llm import AnyLLM
 
@@ -490,6 +514,7 @@ class AnyLLMClient(BaseLLMClient):
         self.provider = provider
         self.model = model
         self._request_timeout = request_timeout
+        self.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
         self._configure_request_limits(model_config=model_config, provider_id=provider)
 
     def chat(
@@ -526,6 +551,8 @@ class AnyLLMClient(BaseLLMClient):
             timeout = self._nonstreaming_request_timeout()
             if timeout is not None:
                 params.setdefault("timeout", timeout)
+        if self.reasoning_effort is not None:
+            params.setdefault("reasoning_effort", self.reasoning_effort)
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
@@ -685,6 +712,8 @@ class AnyLLMClient(BaseLLMClient):
             timeout = self._nonstreaming_request_timeout()
             if timeout is not None:
                 params.setdefault("timeout", timeout)
+        if self.reasoning_effort is not None:
+            params.setdefault("reasoning_effort", self.reasoning_effort)
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
@@ -796,8 +825,11 @@ class OpenAIClient(AnyLLMClient):
         model_config: ModelConfig | None = None,
         extra_headers: dict[str, str] | None = None,
         request_timeout: float | None = None,
+        reasoning_effort: str | None = None,
     ):
-        super().__init__("openai", base_url, api_key, model, model_config, extra_headers, request_timeout)
+        super().__init__(
+            "openai", base_url, api_key, model, model_config, extra_headers, request_timeout, reasoning_effort
+        )
 
 
 class AnthropicClient(AnyLLMClient):
@@ -811,8 +843,11 @@ class AnthropicClient(AnyLLMClient):
         model_config: ModelConfig | None = None,
         extra_headers: dict[str, str] | None = None,
         request_timeout: float | None = None,
+        reasoning_effort: str | None = None,
     ):
-        super().__init__("anthropic", base_url, api_key, model, model_config, extra_headers, request_timeout)
+        super().__init__(
+            "anthropic", base_url, api_key, model, model_config, extra_headers, request_timeout, reasoning_effort
+        )
 
 
 class OpenAIResponsesClient(BaseLLMClient):
@@ -826,6 +861,7 @@ class OpenAIResponsesClient(BaseLLMClient):
         model_config: ModelConfig | None = None,
         extra_headers: dict[str, str] | None = None,
         request_timeout: float | None = None,
+        reasoning_effort: str | None = None,
     ):
         from any_llm import AnyLLM
 
@@ -840,6 +876,7 @@ class OpenAIResponsesClient(BaseLLMClient):
         )
         self.model = model
         self._request_timeout = request_timeout
+        self.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
         self._configure_request_limits(model_config=model_config, provider_id="openai")
 
     def chat(
@@ -880,6 +917,8 @@ class OpenAIResponsesClient(BaseLLMClient):
             "allow_running_loop": True,
             **kwargs,
         }
+        if self.reasoning_effort is not None:
+            params.setdefault("reasoning", {"effort": self.reasoning_effort})
         if max_tokens is not None:
             params["max_output_tokens"] = max_tokens
         if stream_callback is None:
@@ -940,6 +979,8 @@ class OpenAIResponsesClient(BaseLLMClient):
             "tools": response_tools,
             **kwargs,
         }
+        if self.reasoning_effort is not None:
+            params.setdefault("reasoning", {"effort": self.reasoning_effort})
         if max_tokens is not None:
             params["max_output_tokens"] = max_tokens
         if stream_callback is None:
@@ -1098,6 +1139,7 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
     config_api_key = _resolve_config_api_key(cfg)
     auth_header = cfg.auth_header if cfg else None
     request_timeout = cfg.request_timeout_seconds if cfg else None
+    reasoning_effort = (cfg.reasoning_effort if cfg else None) or os.environ.get("ANKA_REASONING_EFFORT")
 
     if api_type == "openai_responses":
         responses_base_url = (cfg.base_url if cfg else None) or os.environ.get(
@@ -1117,6 +1159,7 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
                 api_key=api_key,
             ),
             request_timeout=request_timeout,
+            reasoning_effort=reasoning_effort,
         )
 
     base_url: str | None = cfg.base_url if cfg else None
@@ -1143,6 +1186,7 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
                 api_key=api_key,
             ),
             request_timeout=request_timeout,
+            reasoning_effort=reasoning_effort,
         )
     if api_type == "anthropic":
         return AnthropicClient(
@@ -1158,6 +1202,7 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
                 api_key=api_key,
             ),
             request_timeout=request_timeout,
+            reasoning_effort=reasoning_effort,
         )
     return AnyLLMClient(
         provider=api_type,
@@ -1173,4 +1218,5 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
             api_key=api_key,
         ),
         request_timeout=request_timeout,
+        reasoning_effort=reasoning_effort,
     )

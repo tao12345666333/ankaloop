@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   client creation re-runs the command. The new `auth_header` option (e.g.
   `"Authorization: Bearer {api_key}"`) renders the resolved key into an explicit HTTP
   header for gateways that reject the provider SDK's default credential header.
+
+- **Reasoning effort configuration**: a new `reasoning_effort` setting (in `[chat]`,
+  per `[chat.providers.<name>]` profile, or via `ANKA_REASONING_EFFORT`) controls the
+  reasoning/thinking effort for models that support it. Accepted values are `none`,
+  `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; leaving it unset (or `auto`)
+  keeps the provider default and sends nothing. The level is forwarded on every model
+  request and mapped to each provider's dialect (`reasoning_effort` for chat
+  completions, `reasoning: {"effort": ...}` for OpenRouter and the Responses API), and
+  can still be overridden per call. Invalid values fail fast with a clear error when
+  the client is created.
+
 - **OpenTelemetry tracing**: a new `[tracing]` config section (and standard `OTEL_*`
   environment variables) emits one trace per conversation turn following the GenAI
   semantic conventions: `invoke_agent` → `chat` / `execute_tool` / `ankaloop.hook` /
