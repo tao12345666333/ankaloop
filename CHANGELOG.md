@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.16.0] — 2026-10-09
+
 ### Added
 
 - **Dynamic provider credentials (`api_key_command` / `auth_header`)**: a provider
@@ -94,7 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.15.0] — 2026-09-18
+## [0.15.0] — 2026-09-19
 
 ### Changed
 
@@ -385,7 +389,8 @@ First release under the **AnkaLoop** name (formerly AMCP).
 
 - Initial public release: core agent engine, built-in tools (`read_file`, `grep`, `bash`, `write_file`), TOML configuration, CLI interface, and Dockerfile.
 
-[Unreleased]: https://github.com/tao12345666333/ankaloop/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/tao12345666333/ankaloop/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/tao12345666333/ankaloop/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/tao12345666333/ankaloop/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/tao12345666333/ankaloop/compare/v0.14.0-rc.1...v0.14.0
 [0.14.0-rc.1]: https://github.com/tao12345666333/ankaloop/compare/v0.13.0...v0.14.0-rc.1
