@@ -183,6 +183,10 @@ with `/models` and switch the active profile with `/model use <name>`.
 request_timeout_seconds = 120
 max_retries = 2
 retry_base_delay_seconds = 0.5
+# Reasoning effort for models that support it:
+# none | minimal | low | medium | high | xhigh | max (unset or "auto" = provider default).
+# Can also be set per provider profile or through ANKA_REASONING_EFFORT.
+reasoning_effort = "high"
 tool_loop_limit = 300
 bash_tool_limit = 100
 default_max_lines = 400
