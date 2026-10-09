@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from abc import ABC, abstractmethod
@@ -12,12 +13,15 @@ from typing import Any, cast
 
 import httpx
 
+from .auth import ApiKeyCommandError, format_auth_header, resolve_api_key_command
 from .compaction import (
     estimate_request_tokens,
     get_model_context_window,
     get_model_output_limit,
 )
 from .config import ChatConfig, ModelConfig
+
+logger = logging.getLogger(__name__)
 
 # Type aliases for commonly used complex types
 ToolCall = dict[str, Any]
@@ -331,6 +335,11 @@ class BaseLLMClient(ABC):
     """Base class for LLM clients."""
 
     model: str  # Model name/identifier
+    # Underlying SDK client; its TIMEOUT_SUPPORT attribute gates timeout forwarding.
+    client: Any
+    # Configured per-request timeout, forwarded to non-streaming calls on
+    # providers with native timeout support (see _nonstreaming_request_timeout).
+    _request_timeout: float | None
 
     def _configure_request_limits(
         self,
@@ -347,6 +356,22 @@ class BaseLLMClient(ABC):
     def set_context_overflow_callback(self, callback: Any | None) -> None:
         """Set a callback invoked when local request validation detects overflow."""
         self._context_overflow_callback = callback
+
+    def _nonstreaming_request_timeout(self) -> float | None:
+        """Explicit per-request timeout for non-streaming native-timeout providers.
+
+        The Anthropic SDK refuses non-streaming requests whose ``max_tokens``
+        could exceed its default 10-minute budget unless the caller supplies an
+        explicit ``timeout``, so an unbounded-output request fails client-side
+        before anything is sent. Forwarding the configured request timeout
+        satisfies that guard and aligns the SDK deadline with the outer call
+        deadline; providers without native timeout support are left untouched.
+        """
+        if getattr(self.client, "TIMEOUT_SUPPORT", "unsupported") != "native":
+            return None
+        if self._request_timeout is not None and self._request_timeout > 0:
+            return self._request_timeout
+        return 600.0
 
     def _default_output_limit(self, model: str) -> int:
         """Output-token limit to send when the caller did not specify one.
@@ -449,6 +474,7 @@ class AnyLLMClient(BaseLLMClient):
         model: str,
         model_config: ModelConfig | None = None,
         extra_headers: dict[str, str] | None = None,
+        request_timeout: float | None = None,
     ):
         from any_llm import AnyLLM
 
@@ -463,6 +489,7 @@ class AnyLLMClient(BaseLLMClient):
         )
         self.provider = provider
         self.model = model
+        self._request_timeout = request_timeout
         self._configure_request_limits(model_config=model_config, provider_id=provider)
 
     def chat(
@@ -495,6 +522,10 @@ class AnyLLMClient(BaseLLMClient):
             "allow_running_loop": True,
             **kwargs,
         }
+        if not stream:
+            timeout = self._nonstreaming_request_timeout()
+            if timeout is not None:
+                params.setdefault("timeout", timeout)
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
@@ -650,6 +681,10 @@ class AnyLLMClient(BaseLLMClient):
             "stream": stream_callback is not None,
             **kwargs,
         }
+        if stream_callback is None:
+            timeout = self._nonstreaming_request_timeout()
+            if timeout is not None:
+                params.setdefault("timeout", timeout)
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
@@ -760,8 +795,9 @@ class OpenAIClient(AnyLLMClient):
         model: str,
         model_config: ModelConfig | None = None,
         extra_headers: dict[str, str] | None = None,
+        request_timeout: float | None = None,
     ):
-        super().__init__("openai", base_url, api_key, model, model_config, extra_headers)
+        super().__init__("openai", base_url, api_key, model, model_config, extra_headers, request_timeout)
 
 
 class AnthropicClient(AnyLLMClient):
@@ -774,8 +810,9 @@ class AnthropicClient(AnyLLMClient):
         base_url: str | None = None,
         model_config: ModelConfig | None = None,
         extra_headers: dict[str, str] | None = None,
+        request_timeout: float | None = None,
     ):
-        super().__init__("anthropic", base_url, api_key, model, model_config, extra_headers)
+        super().__init__("anthropic", base_url, api_key, model, model_config, extra_headers, request_timeout)
 
 
 class OpenAIResponsesClient(BaseLLMClient):
@@ -788,6 +825,7 @@ class OpenAIResponsesClient(BaseLLMClient):
         model: str,
         model_config: ModelConfig | None = None,
         extra_headers: dict[str, str] | None = None,
+        request_timeout: float | None = None,
     ):
         from any_llm import AnyLLM
 
@@ -801,6 +839,7 @@ class OpenAIResponsesClient(BaseLLMClient):
             **client_options,
         )
         self.model = model
+        self._request_timeout = request_timeout
         self._configure_request_limits(model_config=model_config, provider_id="openai")
 
     def chat(
@@ -843,6 +882,10 @@ class OpenAIResponsesClient(BaseLLMClient):
         }
         if max_tokens is not None:
             params["max_output_tokens"] = max_tokens
+        if stream_callback is None:
+            timeout = self._nonstreaming_request_timeout()
+            if timeout is not None:
+                params.setdefault("timeout", timeout)
 
         if stream_callback:
             completed_response = None
@@ -899,8 +942,10 @@ class OpenAIResponsesClient(BaseLLMClient):
         }
         if max_tokens is not None:
             params["max_output_tokens"] = max_tokens
-
         if stream_callback is None:
+            timeout = self._nonstreaming_request_timeout()
+            if timeout is not None:
+                params.setdefault("timeout", timeout)
             return self._parse_response(await self.client.aresponses(**params))
 
         completed_response = None
@@ -982,11 +1027,31 @@ class OpenAIResponsesClient(BaseLLMClient):
         )
 
 
+def _resolve_config_api_key(cfg: ChatConfig | None) -> str | None:
+    """Resolve the configured API key, preferring ``api_key_command`` when set.
+
+    A failing command falls back to the static ``api_key`` when one is
+    configured; otherwise the error surfaces so misconfiguration is loud.
+    """
+    if cfg is None:
+        return None
+    if cfg.api_key_command:
+        try:
+            return resolve_api_key_command(cfg.api_key_command, ttl_seconds=cfg.api_key_command_ttl_seconds)
+        except ApiKeyCommandError:
+            if cfg.api_key is None:
+                raise
+            logger.warning("api_key_command failed; falling back to static api_key", exc_info=True)
+    return cfg.api_key
+
+
 def _build_request_headers(
     *,
     base_url: str | None,
     api_type: str | None,
     extra_headers: dict[str, str] | None,
+    auth_header: str | None = None,
+    api_key: str | None = None,
 ) -> dict[str, str] | None:
     """Combine configured headers with automatic OpenRouter app attribution.
 
@@ -994,8 +1059,15 @@ def _build_request_headers(
     X-OpenRouter-Title headers (see https://openrouter.ai/docs/app-attribution).
     When the target is an OpenRouter endpoint, inject defaults so AnkaLoop
     usage is attributed to the project; explicit user headers always win.
+
+    When ``auth_header`` is configured (e.g. ``"Authorization: Bearer
+    {api_key}"``), it is rendered with the resolved key and overrides any
+    same-named entry from ``extra_headers``.
     """
     headers: dict[str, str] = dict(extra_headers) if extra_headers else {}
+    if auth_header:
+        name, value = format_auth_header(auth_header, api_key or "")
+        headers[name] = value
     is_openrouter = bool(base_url and "openrouter.ai" in base_url) or api_type == "openrouter"
     if is_openrouter:
         headers.setdefault(
@@ -1023,12 +1095,15 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
     model_config = cfg.model_config if cfg else None
     if model_config and model_config.model_id and model_config.model_id != model:
         model_config = None
+    config_api_key = _resolve_config_api_key(cfg)
+    auth_header = cfg.auth_header if cfg else None
+    request_timeout = cfg.request_timeout_seconds if cfg else None
 
     if api_type == "openai_responses":
         responses_base_url = (cfg.base_url if cfg else None) or os.environ.get(
             "ANKA_OPENAI_BASE", "https://api.openai.com/v1"
         )
-        api_key = (cfg.api_key if cfg else None) or os.environ.get("OPENAI_API_KEY")
+        api_key = config_api_key or os.environ.get("OPENAI_API_KEY")
         return OpenAIResponsesClient(
             base_url=responses_base_url,
             api_key=api_key,
@@ -1038,13 +1113,16 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
                 base_url=responses_base_url,
                 api_type=api_type,
                 extra_headers=cfg.extra_headers if cfg else None,
+                auth_header=auth_header,
+                api_key=api_key,
             ),
+            request_timeout=request_timeout,
         )
 
     base_url: str | None = cfg.base_url if cfg else None
     if api_type == "openai":
         base_url = base_url or os.environ.get("ANKA_OPENAI_BASE", "https://api.openai.com/v1")
-    api_key = cfg.api_key if cfg else None
+    api_key = config_api_key
     if api_type == "openai":
         api_key = api_key or os.environ.get("OPENAI_API_KEY")
     elif api_type == "gmi":
@@ -1061,7 +1139,10 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
                 base_url=base_url,
                 api_type=api_type,
                 extra_headers=cfg.extra_headers if cfg else None,
+                auth_header=auth_header,
+                api_key=api_key,
             ),
+            request_timeout=request_timeout,
         )
     if api_type == "anthropic":
         return AnthropicClient(
@@ -1073,7 +1154,10 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
                 base_url=base_url,
                 api_type=api_type,
                 extra_headers=cfg.extra_headers if cfg else None,
+                auth_header=auth_header,
+                api_key=api_key,
             ),
+            request_timeout=request_timeout,
         )
     return AnyLLMClient(
         provider=api_type,
@@ -1085,5 +1169,8 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
             base_url=base_url,
             api_type=api_type,
             extra_headers=cfg.extra_headers if cfg else None,
+            auth_header=auth_header,
+            api_key=api_key,
         ),
+        request_timeout=request_timeout,
     )

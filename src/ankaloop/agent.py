@@ -19,6 +19,7 @@ from rich.status import Status
 
 from .agent_spec import ResolvedAgentSpec, get_default_agent_spec
 from .application_services import ApplicationServices
+from .auth import invalidate_api_key_cache
 from .compaction import (
     SmartCompactor,
     estimate_request_tokens,
@@ -29,7 +30,7 @@ from .config import AnkaloopConfig, ChatConfig, ContextConfig, ModelConfig, load
 from .constants import CONFIG_DIR_NAME
 from .context_builder import ContextBuilder
 from .hooks import run_post_tool_use_hooks, run_pre_tool_use_hooks, run_user_prompt_hooks
-from .llm import ContextOverflowError, ProviderError, classify_provider_error
+from .llm import ContextOverflowError, ProviderError, ProviderErrorKind, classify_provider_error
 from .mcp_client import list_mcp_tools
 from .mcp_naming import is_mcp_tool_name, mcp_tool_name
 from .memory import get_memory_manager
@@ -1394,6 +1395,11 @@ class Agent:
                             raise
                         raise provider_error from exc
                     if not provider_error.retryable or attempt >= max_retries:
+                        # A 401 with a command-resolved credential likely means the
+                        # cached token expired mid-session; drop it so the next
+                        # client creation re-runs the command.
+                        if provider_error.kind == ProviderErrorKind.AUTH and policy.api_key_command:
+                            invalidate_api_key_cache(policy.api_key_command)
                         self._emit_event(
                             "provider.error",
                             {

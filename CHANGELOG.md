@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dynamic provider credentials (`api_key_command` / `auth_header`)**: a provider
+  profile (or top-level `[chat]`) can now declare `api_key_command` — a shell command
+  such as `agent-auth-cli token --name kong` — that AnkaLoop executes lazily when the
+  LLM client is created, caching the result and refreshing it before expiry (JWTs are
+  cached until their `exp` claim minus a 60s margin, or `api_key_command_ttl_seconds`
+  if set, whichever comes first; other tokens default to a 300s TTL). The command takes
+  precedence over a static `api_key`, which is kept as a fallback when the command
+  fails. A cached token that the provider rejects with a 401 is invalidated so the next
+  client creation re-runs the command. The new `auth_header` option (e.g.
+  `"Authorization: Bearer {api_key}"`) renders the resolved key into an explicit HTTP
+  header for gateways that reject the provider SDK's default credential header.
 - **OpenTelemetry tracing**: a new `[tracing]` config section (and standard `OTEL_*`
   environment variables) emits one trace per conversation turn following the GenAI
   semantic conventions: `invoke_agent` → `chat` / `execute_tool` / `ankaloop.hook` /
@@ -33,6 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Non-streaming Anthropic requests no longer fail the SDK's client-side timeout
+  guard**: the Anthropic SDK refuses non-streaming requests whose `max_tokens` could
+  exceed its default 10-minute budget unless the caller supplies an explicit `timeout`,
+  so unbounded-output requests failed before anything was sent. `AnyLLMClient` and
+  `OpenAIResponsesClient` now forward the configured `request_timeout_seconds` (or a
+  600s default) as the per-request `timeout` on non-streaming calls for providers with
+  native timeout support; streaming calls are unchanged.
 - **Requests now carry a bounded output-token limit**: `AnyLLMClient` and
   `OpenAIResponsesClient` never put `max_tokens`/`max_output_tokens` on the wire
   unless the caller passed one, so providers that preflight affordability against

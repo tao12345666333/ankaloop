@@ -7,6 +7,7 @@ import httpx
 import pytest
 from any_llm.types.completion import Reasoning
 
+from ankaloop.auth import ApiKeyCommandError
 from ankaloop.config import ChatConfig, ModelConfig
 from ankaloop.llm import (
     AnthropicClient,
@@ -164,10 +165,92 @@ class TestCreateLLMClient:
 
     def test_model_default_when_no_config_or_env(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-        monkeypatch.delenv("ANKA_CHAT_MODEL", raising=False)
+        monkeypatch.delenv("ANKA_API_TYPE", raising=False)
 
         client = create_llm_client(None)
         assert client.model == "gpt-5.5"
+
+    def test_api_key_command_resolves_key(self, monkeypatch):
+        monkeypatch.setattr("ankaloop.llm.resolve_api_key_command", lambda command, ttl_seconds=None: "dynamic-key")
+        cfg = ChatConfig(
+            api_type="anthropic",
+            model="test-model",
+            api_key="static-key",
+            api_key_command="get-token",
+        )
+
+        with patch("any_llm.AnyLLM.create") as create:
+            create_llm_client(cfg)
+
+        assert create.call_args.kwargs["api_key"] == "dynamic-key"
+
+    def test_api_key_command_failure_falls_back_to_static_key(self, monkeypatch):
+        def fail(command, ttl_seconds=None):
+            raise ApiKeyCommandError("boom")
+
+        monkeypatch.setattr("ankaloop.llm.resolve_api_key_command", fail)
+        cfg = ChatConfig(
+            api_type="anthropic",
+            model="test-model",
+            api_key="static-key",
+            api_key_command="get-token",
+        )
+
+        with patch("any_llm.AnyLLM.create") as create:
+            create_llm_client(cfg)
+
+        assert create.call_args.kwargs["api_key"] == "static-key"
+
+    def test_api_key_command_failure_without_static_key_raises(self, monkeypatch):
+        def fail(command, ttl_seconds=None):
+            raise ApiKeyCommandError("boom")
+
+        monkeypatch.setattr("ankaloop.llm.resolve_api_key_command", fail)
+        cfg = ChatConfig(api_type="anthropic", model="test-model", api_key_command="get-token")
+
+        with pytest.raises(ApiKeyCommandError):
+            create_llm_client(cfg)
+
+    def test_auth_header_injected_into_default_headers(self, monkeypatch):
+        monkeypatch.setattr("ankaloop.llm.resolve_api_key_command", lambda command, ttl_seconds=None: "dynamic-key")
+        cfg = ChatConfig(
+            api_type="anthropic",
+            model="test-model",
+            api_key_command="get-token",
+            auth_header="Authorization: Bearer {api_key}",
+        )
+
+        with patch("any_llm.AnyLLM.create") as create:
+            create_llm_client(cfg)
+
+        headers = create.call_args.kwargs["default_headers"]
+        assert headers["Authorization"] == "Bearer dynamic-key"
+
+    def test_auth_header_overrides_same_named_extra_header(self):
+        cfg = ChatConfig(
+            api_type="anthropic",
+            model="test-model",
+            api_key="fresh-key",
+            auth_header="Authorization: Bearer {api_key}",
+            extra_headers={"Authorization": "Bearer stale-key", "X-Other": "kept"},
+        )
+
+        with patch("any_llm.AnyLLM.create") as create:
+            create_llm_client(cfg)
+
+        headers = create.call_args.kwargs["default_headers"]
+        assert headers["Authorization"] == "Bearer fresh-key"
+        assert headers["X-Other"] == "kept"
+
+    def test_auth_header_without_resolved_key_raises(self):
+        cfg = ChatConfig(
+            api_type="anthropic",
+            model="test-model",
+            auth_header="Authorization: Bearer {api_key}",
+        )
+
+        with pytest.raises(ValueError, match="no API key"):
+            create_llm_client(cfg)
 
 
 class TestOpenAIClient:
@@ -676,6 +759,85 @@ class TestOpenAIResponsesClient:
 
         assert captured["max_output_tokens"] == 4096
 
+    def _timeout_test_client(self, request_timeout: float) -> OpenAIResponsesClient:
+        client = OpenAIResponsesClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="test-model",
+            request_timeout=request_timeout,
+        )
+        return client
+
+    def test_forwards_configured_timeout_when_nonstreaming(self):
+        client = self._timeout_test_client(42)
+        captured: dict = {}
+
+        def responses(**kwargs):
+            captured.update(kwargs)
+
+            def events():
+                yield SimpleNamespace(type="response.completed", response=SimpleNamespace(output=[], usage=None))
+
+            return events()
+
+        client.client.responses = responses
+
+        client.chat([{"role": "user", "content": "hello"}])
+
+        assert captured["timeout"] == 42
+
+    def test_omits_timeout_when_streaming(self):
+        client = self._timeout_test_client(42)
+        captured: dict = {}
+
+        def responses(**kwargs):
+            captured.update(kwargs)
+
+            def events():
+                yield SimpleNamespace(type="response.completed", response=SimpleNamespace(output=[], usage=None))
+
+            return events()
+
+        client.client.responses = responses
+
+        client.chat([{"role": "user", "content": "hello"}], stream_callback=lambda _chunk: None)
+
+        assert "timeout" not in captured
+
+    @pytest.mark.asyncio
+    async def test_achat_forwards_configured_timeout_when_nonstreaming(self):
+        client = self._timeout_test_client(42)
+        captured: dict = {}
+
+        async def aresponses(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output=[], usage=None, stop_reason=None, status=None)
+
+        client.client.aresponses = aresponses
+
+        await client.achat([{"role": "user", "content": "hello"}])
+
+        assert captured["timeout"] == 42
+
+    @pytest.mark.asyncio
+    async def test_achat_omits_timeout_when_streaming(self):
+        client = self._timeout_test_client(42)
+        captured: dict = {}
+
+        async def aresponses(**kwargs):
+            captured.update(kwargs)
+
+            async def events():
+                yield SimpleNamespace(type="response.completed", response=SimpleNamespace(output=[], usage=None))
+
+            return events()
+
+        client.client.aresponses = aresponses
+
+        await client.achat([{"role": "user", "content": "hello"}], stream_callback=lambda _chunk: None)
+
+        assert "timeout" not in captured
+
 
 class TestAnthropicClient:
     def test_client_creation(self):
@@ -710,6 +872,192 @@ class TestAnthropicClient:
         assert response.usage.prompt_tokens == 140
         assert response.usage.output_tokens == 20
         assert response.usage.cached_input_tokens == 30
+
+
+class TestNonstreamingRequestTimeout:
+    """Tests for explicit per-request timeout forwarding on non-streaming calls.
+
+    The Anthropic SDK rejects non-streaming requests whose max_tokens could
+    exceed its default 10-minute budget unless an explicit timeout is given,
+    so native-timeout providers receive the configured request timeout.
+    """
+
+    @staticmethod
+    def _capture_completion(client) -> dict:
+        captured: dict = {}
+
+        def completion(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="done", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            )
+
+        client.client.completion = completion
+        return captured
+
+    def test_chat_forwards_configured_timeout_when_nonstreaming(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="test-model",
+            request_timeout=42,
+        )
+        captured = self._capture_completion(client)
+
+        client.chat([{"role": "user", "content": "hello"}])
+
+        assert captured["timeout"] == 42
+
+    def test_chat_defaults_to_600_without_configured_timeout(self):
+        client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="test-model")
+        captured = self._capture_completion(client)
+
+        client.chat([{"role": "user", "content": "hello"}])
+
+        assert captured["timeout"] == 600.0
+
+    def test_chat_omits_timeout_when_streaming(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="test-model",
+            request_timeout=42,
+        )
+        captured: dict = {}
+
+        def completion(**kwargs):
+            captured.update(kwargs)
+            return iter(
+                [
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(content="done", tool_calls=None),
+                                finish_reason="stop",
+                            )
+                        ],
+                        usage=None,
+                    )
+                ]
+            )
+
+        client.client.completion = completion
+
+        client.chat([{"role": "user", "content": "hello"}], stream_callback=lambda _chunk: None)
+
+        assert "timeout" not in captured
+
+    def test_chat_caller_supplied_timeout_wins(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="test-model",
+            request_timeout=42,
+        )
+        captured = self._capture_completion(client)
+
+        client.chat([{"role": "user", "content": "hello"}], timeout=7)
+
+        assert captured["timeout"] == 7
+
+    def test_chat_omits_timeout_for_providers_without_native_support(self):
+        client = AnyLLMClient.__new__(AnyLLMClient)
+        client.model = "test-model"
+        client.provider = "lmstudio"
+        client._request_timeout = 42
+        captured: dict = {}
+
+        def completion(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="done", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            )
+
+        client.client = SimpleNamespace(completion=completion, TIMEOUT_SUPPORT="unsupported")
+
+        client.chat([{"role": "user", "content": "hello"}])
+
+        assert "timeout" not in captured
+
+    @pytest.mark.asyncio
+    async def test_achat_forwards_configured_timeout_when_nonstreaming(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="test-model",
+            request_timeout=42,
+        )
+        captured: dict = {}
+
+        async def acompletion(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="done", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            )
+
+        client.client.acompletion = acompletion
+
+        await client.achat([{"role": "user", "content": "hello"}])
+
+        assert captured["timeout"] == 42
+
+    @pytest.mark.asyncio
+    async def test_achat_omits_timeout_when_streaming(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="test-model",
+            request_timeout=42,
+        )
+        captured: dict = {}
+
+        async def acompletion(**kwargs):
+            captured.update(kwargs)
+
+            async def chunks():
+                yield SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content="done", tool_calls=None),
+                            finish_reason="stop",
+                        )
+                    ],
+                    usage=None,
+                )
+
+            return chunks()
+
+        client.client.acompletion = acompletion
+
+        await client.achat([{"role": "user", "content": "hello"}], stream_callback=lambda _chunk: None)
+
+        assert "timeout" not in captured
+
+    @pytest.mark.parametrize("api_type", ["openai", "anthropic", "gmi", "openai_responses"])
+    def test_create_llm_client_wires_request_timeout(self, api_type):
+        cfg = ChatConfig(api_type=api_type, model="test-model", api_key="test-key", request_timeout_seconds=33)
+
+        client = create_llm_client(cfg)
+
+        assert client._request_timeout == 33
 
 
 class TestRequestHeaders:
