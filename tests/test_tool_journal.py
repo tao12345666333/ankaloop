@@ -384,8 +384,10 @@ class TestToolLoopWiring:
         from ankaloop.agent import Agent
         from ankaloop.config import AnkaloopConfig, ContextConfig
 
-        with patch("ankaloop.agent.Path.home") as mock_home, patch("ankaloop.agent.load_config") as mock_load:
-            mock_home.return_value = tmp_path
+        with (
+            patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
+            patch("ankaloop.agent.load_config") as mock_load,
+        ):
             mock_load.return_value = MagicMock()
             agent = Agent(session_id="journal-wiring")
         return agent

@@ -22,12 +22,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .constants import CONFIG_DIR_NAME, PROJECT_DIR_NAME
+from .constants import CONFIG_DIR, PROJECT_DIR_NAME
 
 logger = logging.getLogger(__name__)
-
-
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / CONFIG_DIR_NAME
 
 DEFAULT_SOUL = """You are AnkaLoop, a long-running autonomous coding agent.
 
@@ -809,6 +806,41 @@ _memory_manager: MemoryManager | None = None
 _memory_manager_project_root: Path | None = None
 
 
+def _create_memory_manager(project_root: Path | None) -> MemoryManager:
+    """Create a memory manager based on the ``[memory]`` config section.
+
+    With ``backend = "http"`` this returns an ``HttpMemoryManager`` so every
+    caller of ``get_memory_manager`` (agent context injection, the memory tool,
+    sub-agents) transparently uses the remote backend. Unknown or incomplete
+    configuration falls back to the local backend.
+    """
+    from .config import load_config
+
+    try:
+        memory_cfg = load_config().memory
+    except Exception as e:
+        logger.warning(f"Could not load config; using local memory backend: {e}")
+        memory_cfg = None
+
+    if memory_cfg is not None and memory_cfg.backend == "http":
+        if not memory_cfg.url:
+            logger.error("[memory] backend='http' requires 'url'; falling back to local backend")
+        else:
+            from .memory_http import HttpMemoryManager
+
+            token = memory_cfg.token or os.environ.get("ANKA_MEMORY_TOKEN")
+            return HttpMemoryManager(
+                base_url=memory_cfg.url,
+                token=token,
+                timeout_seconds=memory_cfg.timeout_seconds,
+                project_root=project_root,
+            )
+    elif memory_cfg is not None and memory_cfg.backend != "local":
+        logger.warning(f"Unknown [memory] backend {memory_cfg.backend!r}; using local backend")
+
+    return MemoryManager(project_root)
+
+
 def get_memory_manager(project_root: Path | None = None) -> MemoryManager:
     """Get or create the global memory manager.
 
@@ -821,7 +853,7 @@ def get_memory_manager(project_root: Path | None = None) -> MemoryManager:
     global _memory_manager, _memory_manager_project_root
     resolved_root = project_root.resolve() if project_root else None
     if _memory_manager is None or (resolved_root is not None and resolved_root != _memory_manager_project_root):
-        _memory_manager = MemoryManager(resolved_root)
+        _memory_manager = _create_memory_manager(resolved_root)
         _memory_manager_project_root = resolved_root
     return _memory_manager
 

@@ -11,12 +11,12 @@ from typing import Any
 
 import httpx
 
-from .constants import CONFIG_DIR_NAME
+from .constants import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 
 # Default cache directory
-CACHE_DIR = Path.home() / ".config" / CONFIG_DIR_NAME / "cache"
+CACHE_DIR = CONFIG_DIR / "cache"
 MODELS_CACHE_FILE = CACHE_DIR / "models.json"
 MODELS_DEV_API_URL = "https://models.dev/api.json"
 

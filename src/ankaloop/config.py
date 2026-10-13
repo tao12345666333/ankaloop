@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +14,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 import tomli_w  # type: ignore
 
-from .constants import CONFIG_DIR_NAME
+from .constants import CONFIG_DIR
 from .telegram.config import (
     TelegramConfig,
     TelegramGroupConfig,
@@ -29,7 +28,6 @@ from .telegram.config import (
     parse_user_ids,
 )
 
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / CONFIG_DIR_NAME
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
 
@@ -253,6 +251,22 @@ class TracingConfig:
 
 
 @dataclass
+class MemoryConfig:
+    """Long-term memory backend configuration.
+
+    ``backend`` is ``local`` (default; file/SQLite storage under the config
+    directory) or ``http`` (a remote memory service; see docs/memory.md).
+    ``token`` authenticates HTTP requests; the ``ANKA_MEMORY_TOKEN`` environment
+    variable is used when it is unset here.
+    """
+
+    backend: str = "local"
+    url: str | None = None
+    token: str | None = None
+    timeout_seconds: float = 10.0
+
+
+@dataclass
 class AnkaloopConfig:
     servers: dict[str, Server]
     chat: ChatConfig | None = None
@@ -261,6 +275,7 @@ class AnkaloopConfig:
     telegram: TelegramConfig | None = None
     automation: AutomationConfig | None = None
     tracing: TracingConfig | None = None
+    memory: MemoryConfig | None = None
 
 
 _DEFAULT = {
@@ -373,6 +388,9 @@ _DEFAULT = {
         "enabled": True,
         "default_timeout": 300,
         "jobs": [],
+    },
+    "memory": {
+        "backend": "local",
     },
 }
 
@@ -782,6 +800,8 @@ def load_config() -> AnkaloopConfig:
     automation = _decode_automation(automation_data) if isinstance(automation_data, dict) else None
     tracing_data = data.get("tracing")
     tracing = _decode_tracing(tracing_data) if isinstance(tracing_data, dict) else None
+    memory_data = data.get("memory")
+    memory = _decode_memory(memory_data) if isinstance(memory_data, dict) else None
     return AnkaloopConfig(
         servers=servers,
         chat=chat,
@@ -790,6 +810,7 @@ def load_config() -> AnkaloopConfig:
         telegram=telegram,
         automation=automation,
         tracing=tracing,
+        memory=memory,
     )
 
 
@@ -1078,6 +1099,9 @@ def save_config(cfg: AnkaloopConfig) -> Path:
     tracing_obj = _encode_tracing(cfg.tracing)
     if tracing_obj is not None:
         data["tracing"] = tracing_obj
+    memory_obj = _encode_memory(cfg.memory)
+    if memory_obj is not None:
+        data["memory"] = memory_obj
     with open(CONFIG_FILE, "wb") as f:
         tomli_w.dump(data, f)
     return CONFIG_FILE
@@ -1211,4 +1235,38 @@ def _encode_tracing(cfg: TracingConfig | None) -> dict | None:
         out["compat"] = list(cfg.compat)
     if cfg.headers:
         out["headers"] = dict(cfg.headers)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Memory config decode / encode
+# ---------------------------------------------------------------------------
+
+
+def _decode_memory(raw: Mapping[str, object] | None) -> MemoryConfig | None:
+    """Decode [memory] section from TOML."""
+    if raw is None:
+        return None
+    defaults = MemoryConfig()
+    url = raw.get("url")
+    token = raw.get("token")
+    return MemoryConfig(
+        backend=str(raw.get("backend", defaults.backend)),
+        url=str(url) if url else None,
+        token=str(token) if token else None,
+        timeout_seconds=float(str(raw.get("timeout_seconds", defaults.timeout_seconds))),
+    )
+
+
+def _encode_memory(cfg: MemoryConfig | None) -> dict | None:
+    """Encode MemoryConfig to TOML-compatible dict."""
+    if cfg is None:
+        return None
+    out: dict[str, Any] = {"backend": cfg.backend}
+    if cfg.url:
+        out["url"] = cfg.url
+    if cfg.token:
+        out["token"] = cfg.token
+    if cfg.timeout_seconds != MemoryConfig().timeout_seconds:
+        out["timeout_seconds"] = float(cfg.timeout_seconds)
     return out

@@ -11,6 +11,12 @@ working.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 CONFIG_DIR_NAME = os.environ.get("ANKA_CONFIG_DIR_NAME", "ankaloop")
 PROJECT_DIR_NAME = ".ankaloop"
+
+# User-level config/state directory. Honors XDG_CONFIG_HOME so deployments where
+# HOME is ephemeral or read-only can relocate it. Modules should import this
+# instead of assembling ``~/.config/<name>`` themselves.
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / CONFIG_DIR_NAME

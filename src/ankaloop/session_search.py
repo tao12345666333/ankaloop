@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .memory import CONFIG_DIR
+from .constants import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 

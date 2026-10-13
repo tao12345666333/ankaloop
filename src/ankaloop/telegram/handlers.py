@@ -939,9 +939,9 @@ class TelegramHandlers:
 
     def _scan_orphan_journals(self, chat_id: int, current_session: TelegramSession | None) -> tuple[list[str], int]:
         """Resolve journals of past sessions for this chat; read-only."""
-        from ..constants import CONFIG_DIR_NAME
+        from ..constants import CONFIG_DIR
 
-        root = Path.home() / ".config" / CONFIG_DIR_NAME / "sessions"
+        root = CONFIG_DIR / "sessions"
         current_id = current_session.session_id if current_session else None
         lines: list[str] = []
         journals_found = 0

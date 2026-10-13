@@ -48,7 +48,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from .constants import CONFIG_DIR_NAME
+from .constants import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -650,12 +650,10 @@ async def emit_task_event(
     await get_event_bus().emit(event)
     if session_id:
         try:
-            from pathlib import Path
-
             from .session_store import SessionTimelineStore
 
             SessionTimelineStore(
-                Path.home() / ".config" / CONFIG_DIR_NAME / "sessions",
+                CONFIG_DIR / "sessions",
                 session_id,
             ).append(event_type.value, event.data, timestamp=event.timestamp.isoformat())
         except Exception as exc:

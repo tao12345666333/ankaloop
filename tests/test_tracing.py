@@ -60,7 +60,10 @@ def _services() -> ApplicationServices:
 
 @pytest.fixture
 def agent(tmp_path) -> Agent:
-    with patch("ankaloop.agent.Path.home", return_value=tmp_path), patch("ankaloop.agent.load_config") as load:
+    with (
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
+        patch("ankaloop.agent.load_config") as load,
+    ):
         load.return_value = MagicMock()
         return Agent(session_id="trace-session", services=_services())
 
