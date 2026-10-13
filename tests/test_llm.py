@@ -1,5 +1,6 @@
 """Tests for LLM client abstraction."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -1275,3 +1276,71 @@ class TestRequestHeaders:
         assert headers["HTTP-Referer"] == "https://example.com"
         assert headers["X-OpenRouter-Title"] == "MyApp"
         assert "X-OpenRouter-Categories" not in headers
+
+
+class TestLLMClientAclose:
+    """Tests for deterministic, in-loop LLM client cleanup.
+
+    Provider SDKs close their HTTP transports from ``__del__`` on whatever loop
+    is running at GC time, which fails with "Event loop is closed" when the
+    connections belong to an earlier loop. AnkaLoop therefore closes every
+    client on the loop that served it; these tests pin that contract.
+    """
+
+    def test_aclose_closes_underlying_sdk_client(self):
+        closed = []
+
+        class FakeSDKClient:
+            async def close(self):
+                closed.append(True)
+
+        provider = SimpleNamespace(client=FakeSDKClient())
+        with patch("any_llm.AnyLLM.create", return_value=provider):
+            client = AnyLLMClient("gmi", None, "key", "model")
+
+        asyncio.run(client.aclose())
+
+        assert closed == [True]
+
+    def test_aclose_prefers_provider_level_close(self):
+        closed = []
+
+        class FakeProvider:
+            client = SimpleNamespace()
+
+            async def aclose(self):
+                closed.append(True)
+
+        with patch("any_llm.AnyLLM.create", return_value=FakeProvider()):
+            client = AnyLLMClient("gmi", None, "key", "model")
+
+        asyncio.run(client.aclose())
+
+        assert closed == [True]
+
+    def test_aclose_suppresses_close_failures(self):
+        class FailingSDKClient:
+            async def close(self):
+                raise RuntimeError("Event loop is closed")
+
+        provider = SimpleNamespace(client=FailingSDKClient())
+        with patch("any_llm.AnyLLM.create", return_value=provider):
+            client = AnyLLMClient("gmi", None, "key", "model")
+
+        # A failing close must never mask the outcome the client already served.
+        asyncio.run(client.aclose())
+
+    def test_responses_client_aclose_closes_underlying_sdk_client(self):
+        closed = []
+
+        class FakeSDKClient:
+            async def close(self):
+                closed.append(True)
+
+        provider = SimpleNamespace(client=FakeSDKClient())
+        with patch("any_llm.AnyLLM.create", return_value=provider):
+            client = OpenAIResponsesClient("https://api.openai.com/v1", "key", "model")
+
+        asyncio.run(client.aclose())
+
+        assert closed == [True]

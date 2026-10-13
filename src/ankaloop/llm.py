@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import re
@@ -485,6 +486,40 @@ class BaseLLMClient(ABC):
             **kwargs,
         )
 
+    async def aclose(self) -> None:  # noqa: B027
+        """Release resources held by the client.
+
+        Must be awaited on the event loop that served this client's requests,
+        before that loop is closed. Provider SDKs schedule transport cleanup
+        from ``__del__`` on whatever loop happens to be running at GC time,
+        which raises ``RuntimeError: Event loop is closed`` when the
+        connections belong to an earlier, already-closed loop. The default
+        implementation has nothing to release.
+        """
+
+
+async def _aclose_anyllm_provider(provider: Any) -> None:
+    """Close the SDK client held by an any-llm provider instance.
+
+    any-llm has no provider-level close API; each provider keeps its SDK
+    client (e.g. ``openai.AsyncOpenAI``) on a ``client`` attribute, and that
+    client owns the async HTTP transport. Closing is best-effort: a failing
+    close must never mask the outcome of the request the client served.
+    """
+    for candidate in (provider, getattr(provider, "client", None)):
+        if candidate is None:
+            continue
+        close = getattr(candidate, "aclose", None) or getattr(candidate, "close", None)
+        if not callable(close):
+            continue
+        try:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.debug("Failed to close LLM provider client", exc_info=True)
+        return
+
 
 class AnyLLMClient(BaseLLMClient):
     """Completion client for any provider supported by any-llm."""
@@ -516,6 +551,10 @@ class AnyLLMClient(BaseLLMClient):
         self._request_timeout = request_timeout
         self.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
         self._configure_request_limits(model_config=model_config, provider_id=provider)
+
+    async def aclose(self) -> None:
+        """Close the underlying any-llm provider's HTTP client."""
+        await _aclose_anyllm_provider(self.client)
 
     def chat(
         self,
@@ -878,6 +917,10 @@ class OpenAIResponsesClient(BaseLLMClient):
         self._request_timeout = request_timeout
         self.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
         self._configure_request_limits(model_config=model_config, provider_id="openai")
+
+    async def aclose(self) -> None:
+        """Close the underlying any-llm provider's HTTP client."""
+        await _aclose_anyllm_provider(self.client)
 
     def chat(
         self,

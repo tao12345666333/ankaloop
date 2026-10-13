@@ -526,7 +526,7 @@ class TestTurnServiceWiring(TestToolLoopWiring):
     @pytest.mark.asyncio
     async def test_turn_lifecycle_events_in_journal(self, agent, tmp_path: Path):
         """Full turn through process_message journals started + committed."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from ankaloop.config import AnkaloopConfig, ChatConfig, ContextConfig
         from ankaloop.runtime import TurnRequest
@@ -538,7 +538,7 @@ class TestTurnServiceWiring(TestToolLoopWiring):
                 with (
                     patch.object(agent, "_build_tools_and_registry", return_value=([], {})),
                     patch.object(agent, "_get_system_prompt", return_value="sys"),
-                    patch("ankaloop.llm.create_llm_client"),
+                    patch("ankaloop.llm.create_llm_client", return_value=MagicMock(aclose=AsyncMock())),
                 ):
                     # A provider failure journals turn_failed, not a commit.
                     from ankaloop.llm import ProviderError, ProviderErrorKind
