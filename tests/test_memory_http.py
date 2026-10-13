@@ -30,10 +30,9 @@ def make_manager(
     **kwargs,
 ) -> HttpMemoryManager:
     """Build an HttpMemoryManager wired to a mock transport and temp outbox."""
-    client = httpx.Client(transport=httpx.MockTransport(handler))  # type: ignore[arg-type]
     return HttpMemoryManager(
         base_url="https://memory.test",
-        client=client,
+        transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
         outbox_path=tmp_path / "outbox.jsonl",
         **kwargs,
     )
@@ -299,6 +298,41 @@ class TestDegradation:
         assert manager.write_long_term("v2") is False
         entries = [json.loads(line) for line in (tmp_path / "outbox.jsonl").read_text().splitlines()]
         assert [e["args"]["content"] for e in entries] == ["v1", "v2"]
+
+    def test_new_write_staged_while_older_writes_stuck(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Selective remote failure must not reorder writes.
+
+        The remote keeps rejecting the staged PUT while it would accept the new
+        POST; the new write must queue behind the stuck one, not jump ahead.
+        """
+        monkeypatch.setattr("ankaloop.memory_http._FLUSH_COOLDOWN_SECONDS", 0)
+        state = {"long_term_up": False}
+        posted: list[dict] = []
+        put: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "PUT":
+                if not state["long_term_up"]:
+                    return httpx.Response(500, json={"error": "long-term store down"})
+                put.append(json.loads(request.content))
+                return httpx.Response(200, json={"ok": True})
+            posted.append(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True})
+
+        manager = make_manager(handler, tmp_path)
+        assert manager.write_long_term("old") is False
+        manager.append_history("new-event", session_id="s1")
+        # The POST was never dispatched: it queued behind the stuck PUT.
+        assert posted == []
+        entries = [json.loads(line) for line in (tmp_path / "outbox.jsonl").read_text().splitlines()]
+        assert [e["op"] for e in entries] == ["write_long_term", "append_history"]
+
+        state["long_term_up"] = True
+        manager.append_history("later-event", session_id="s1")
+        # Recovery replays everything in original order.
+        assert [b["content"] for b in put] == ["old"]
+        assert [b["content"] for b in posted] == ["new-event", "later-event"]
+        assert not (tmp_path / "outbox.jsonl").exists()
 
     def test_outbox_capped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("ankaloop.memory_http.MAX_OUTBOX_ENTRIES", 5)

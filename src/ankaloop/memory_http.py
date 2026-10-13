@@ -8,8 +8,9 @@ the single writer; this client performs no merging or caching.
 Failure semantics:
 - Reads degrade to empty results when the remote is unreachable, so the current
   turn can still complete.
-- Writes are staged in a local JSONL outbox and replayed in order before
-  subsequent writes once the remote recovers.
+- Writes are staged in a local JSONL outbox and replayed in order once the
+  remote recovers; while staged writes remain, new writes are appended to the
+  outbox too, so the remote always sees a strict FIFO order.
 
 The HTTP API contract is documented in docs/memory.md.
 """
@@ -57,7 +58,7 @@ class HttpMemoryManager(MemoryManager):
         timeout_seconds: float = 10.0,
         project_root: Path | None = None,
         outbox_path: Path | None = None,
-        client: httpx.Client | None = None,
+        transport: httpx.BaseTransport | None = None,
     ) -> None:
         # Deliberately does not call super().__init__(): no local stores exist
         # for this backend. All public methods are overridden.
@@ -67,13 +68,8 @@ class HttpMemoryManager(MemoryManager):
         self._outbox_lock = threading.Lock()
         # Sentinel so the first flush attempt is never skipped by the cooldown.
         self._last_flush_attempt = -_FLUSH_COOLDOWN_SECONDS
-        if client is not None:
-            self._client = client
-            if token:
-                self._client.headers["Authorization"] = f"Bearer {token}"
-        else:
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
-            self._client = httpx.Client(timeout=timeout_seconds, headers=headers)
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        self._client = httpx.Client(timeout=timeout_seconds, headers=headers, transport=transport)
 
     # --- HTTP plumbing ---
 
@@ -195,15 +191,18 @@ class HttpMemoryManager(MemoryManager):
         else:
             logger.warning(f"Skipping unknown staged memory op: {op!r}")
 
-    def _flush_outbox(self) -> None:
-        """Replay staged writes in order; stop at the first failure."""
+    def _flush_outbox(self) -> bool:
+        """Replay staged writes in order; stop at the first failure.
+
+        Returns True when no staged writes remain.
+        """
         with self._outbox_lock:
             entries = self._read_outbox()
             if not entries:
-                return
+                return True
             now = time.monotonic()
             if now - self._last_flush_attempt < _FLUSH_COOLDOWN_SECONDS:
-                return
+                return False
             self._last_flush_attempt = now
             remaining: list[dict[str, Any]] = []
             flushed = 0
@@ -218,14 +217,20 @@ class HttpMemoryManager(MemoryManager):
             self._write_outbox(remaining)
             if flushed:
                 logger.info(f"Flushed {flushed} staged memory write(s) to remote backend")
+            return not remaining
 
     def _write(self, op: str, args: dict[str, Any]) -> bool:
         """Flush staged writes, then perform this write; stage it on failure.
 
+        While older writes are still stuck in the outbox, this write is staged
+        too so the remote always sees a strict FIFO order.
+
         Returns True when the write reached the remote now, False when it was
         staged locally for later replay.
         """
-        self._flush_outbox()
+        if not self._flush_outbox():
+            self._stage(op, args)
+            return False
         try:
             self._dispatch(op, args)
             return True

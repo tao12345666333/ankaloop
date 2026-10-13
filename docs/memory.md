@@ -12,7 +12,8 @@ lives:
 ```toml
 [memory]
 backend = "local"        # "local" (default) | "http"
-url = "https://..."      # required when backend = "http"
+url = "https://memory.example.com"  # required when backend = "http"; service root —
+                                    # the client appends the /v1/... paths itself
 token = "..."            # optional bearer token; ANKA_MEMORY_TOKEN env var also works
 timeout_seconds = 10.0   # optional per-request timeout
 ```
@@ -39,9 +40,10 @@ expected to happen on the server side.
   completes.
 - **Writes** are staged in a local JSONL outbox
   (`~/.config/ankaloop/memory-outbox.jsonl`, capped at 1000 entries) and
-  replayed in order before subsequent writes once the remote recovers. A write
-  that was staged instead of applied returns `False` from `write_long_term` /
-  `delete_fact`.
+  replayed in order once the remote recovers; while any staged writes remain,
+  new writes are appended to the outbox as well, so the remote always sees a
+  strict FIFO order. A write that was staged instead of applied returns `False`
+  from `write_long_term` / `delete_fact`.
 - The remote is the single writer; the client performs no merging or caching.
 
 ### Scope semantics
@@ -53,10 +55,12 @@ global-only, same as the local manager.
 
 ## HTTP API contract
 
-The client speaks JSON over HTTP. `Authorization: Bearer <token>` is sent when
-a token is configured. `scope` and `project_root` appear as query parameters on
-GET/DELETE and as JSON body fields otherwise. Responses are JSON objects;
-non-2xx responses count as backend failures.
+`url` is the **service root**: the client appends the `/v1/...` paths below to
+it (a trailing slash on `url` is stripped). The client speaks JSON over HTTP.
+`Authorization: Bearer <token>` is sent when a token is configured. `scope` and
+`project_root` appear as query parameters on GET/DELETE and as JSON body fields
+otherwise. Responses are JSON objects; non-2xx responses count as backend
+failures.
 
 | Method | Path | Request | Response |
 |--------|------|---------|----------|
@@ -79,7 +83,9 @@ non-2xx responses count as backend failures.
 
 Notes for server implementers:
 
-- `source` on search results is `"memory"` or `"history"`.
+- `/v1/search` must search across **both** long-term memory and history (plus
+  the fact/event stores when present), mirroring `MemoryManager.search`. Each
+  result's `source` is `"memory"` or `"history"`.
 - Fact dicts keep the local shape: `key`, `value`, `category`, `source`,
   `confidence`, plus optional timestamps.
 - `include_default=true` on `/v1/soul` asks the server to return its built-in
