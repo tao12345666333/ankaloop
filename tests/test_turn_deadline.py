@@ -26,7 +26,7 @@ def _services() -> ApplicationServices:
 
 def _agent(tmp_path, chat: ChatConfig | None = None) -> Agent:
     services = _services()
-    with patch("ankaloop.agent.Path.home", return_value=tmp_path):
+    with patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"):
         agent = Agent(services=services)
     if chat is not None:
         cfg = MagicMock()

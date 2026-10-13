@@ -414,7 +414,7 @@ class _ToolCallingLLM:
 
 @pytest.mark.asyncio
 async def test_hidden_tool_call_is_denied_without_execution(tmp_path):
-    with patch("ankaloop.agent.Path.home", return_value=tmp_path):
+    with patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"):
         agent = Agent(_spec(tools=None), session_id="hidden")
     llm = _ToolCallingLLM(
         {
@@ -462,7 +462,7 @@ async def test_empty_allowlist_and_disabled_delegation_cannot_execute(tmp_path):
         ),
     ]
     for index, (spec, tool_spec, call) in enumerate(cases):
-        with patch("ankaloop.agent.Path.home", return_value=tmp_path):
+        with patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"):
             agent = Agent(spec, session_id=f"denied-{index}")
         llm = _ToolCallingLLM(call)
         assert (
@@ -485,7 +485,7 @@ async def test_empty_allowlist_and_disabled_delegation_cannot_execute(tmp_path):
 async def test_invalid_arguments_are_repairable_but_missing_id_is_protocol_error(tmp_path):
     cfg = AnkaloopConfig(servers={}, chat=None, context=ContextConfig())
     with (
-        patch("ankaloop.agent.Path.home", return_value=tmp_path),
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
         patch("ankaloop.agent.load_config", return_value=cfg),
     ):
         agent = Agent(_spec(tools=None), session_id="malformed")

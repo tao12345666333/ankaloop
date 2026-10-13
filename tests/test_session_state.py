@@ -95,7 +95,7 @@ async def test_tool_loop_returns_ordered_canonical_message_delta(tmp_path):
             return SimpleNamespace(content="done", tool_calls=None, usage=None)
 
     with (
-        patch("ankaloop.agent.Path.home", return_value=tmp_path),
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
         patch("ankaloop.agent.load_config", return_value=_config()),
     ):
         agent = Agent(session_id="tool-delta")
@@ -124,7 +124,7 @@ async def test_tool_loop_returns_ordered_canonical_message_delta(tmp_path):
 @pytest.mark.asyncio
 async def test_completed_turn_persists_full_tool_evidence_and_restarts(tmp_path):
     with (
-        patch("ankaloop.agent.Path.home", return_value=tmp_path),
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
         patch("ankaloop.agent.load_config", return_value=_config()),
         patch(
             "ankaloop.agent.run_user_prompt_hooks",
@@ -164,7 +164,7 @@ async def test_completed_turn_persists_full_tool_evidence_and_restarts(tmp_path)
 @pytest.mark.asyncio
 async def test_failed_and_cancelled_turns_leave_committed_state_unchanged(tmp_path):
     with (
-        patch("ankaloop.agent.Path.home", return_value=tmp_path),
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
         patch("ankaloop.agent.load_config", return_value=_config()),
         patch(
             "ankaloop.agent.run_user_prompt_hooks",
@@ -237,7 +237,7 @@ async def test_failed_and_cancelled_turns_leave_committed_state_unchanged(tmp_pa
 @pytest.mark.asyncio
 async def test_save_failure_fails_turn_handle_without_advancing_memory(tmp_path):
     with (
-        patch("ankaloop.agent.Path.home", return_value=tmp_path),
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
         patch("ankaloop.agent.load_config", return_value=_config()),
         patch(
             "ankaloop.agent.run_user_prompt_hooks",
@@ -299,7 +299,7 @@ async def test_checkpoint_restart_only_compacts_new_committed_prefix(tmp_path):
             )
 
     with (
-        patch("ankaloop.agent.Path.home", return_value=tmp_path),
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
         patch("ankaloop.agent.load_config", return_value=_config()),
         patch(
             "ankaloop.agent.run_user_prompt_hooks",

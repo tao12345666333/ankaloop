@@ -527,3 +527,40 @@ def test_active_provider_applies_reasoning_effort():
     chat = config_module._decode_chat(raw)
     assert chat is not None
     assert chat.reasoning_effort == "high"
+
+
+def test_decode_memory_defaults():
+    cfg = config_module._decode_memory({})
+    assert cfg is not None
+    assert cfg.backend == "local"
+    assert cfg.url is None
+    assert cfg.token is None
+    assert cfg.timeout_seconds == 10.0
+
+
+def test_decode_encode_memory_roundtrip():
+    raw = {
+        "backend": "http",
+        "url": "https://memory.example.com",
+        "token": "secret",
+        "timeout_seconds": 5.0,
+    }
+    cfg = config_module._decode_memory(raw)
+    assert cfg is not None
+    assert cfg.backend == "http"
+    assert cfg.url == "https://memory.example.com"
+    assert cfg.token == "secret"
+    assert cfg.timeout_seconds == 5.0
+
+    encoded = config_module._encode_memory(cfg)
+    assert encoded == raw
+
+
+def test_encode_memory_omits_defaults_and_secrets_when_unset():
+    cfg = config_module.MemoryConfig(backend="local")
+    encoded = config_module._encode_memory(cfg)
+    assert encoded == {"backend": "local"}
+
+
+def test_decode_memory_none():
+    assert config_module._decode_memory(None) is None

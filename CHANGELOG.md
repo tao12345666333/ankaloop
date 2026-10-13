@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Remote memory backend (`[memory] backend = "http"`)**: a new `[memory]` config
+  section lets multiple AnkaLoop processes and environments share one long-term
+  memory through a remote HTTP service instead of local files. When enabled,
+  `get_memory_manager()` returns an `HttpMemoryManager` that maps every memory
+  operation (context injection, long-term memory, history, facts, persona, stats)
+  to one HTTP call, so the agent, the `memory` tool, sub-agents, and Telegram all
+  use the remote transparently. Reads degrade to empty context when the remote is
+  unreachable; failed writes are staged in a local outbox
+  (`~/.config/ankaloop/memory-outbox.jsonl`) and replayed in order once it
+  recovers. `token` (or the `ANKA_MEMORY_TOKEN` env var) configures a bearer
+  token; `scope` semantics pass through unchanged. The API contract is documented
+  in `docs/memory.md`.
+
+### Fixed
+
+- **XDG_CONFIG_HOME honored consistently**: session stores, transcripts, model
+  cache, prompt history, and log paths now honor `XDG_CONFIG_HOME` instead of
+  hardcoding `~/.config`, matching the config directory resolution. The shared
+  constant lives in `ankaloop.constants.CONFIG_DIR`.
+
 ---
 
 ## [0.16.0] — 2026-10-09

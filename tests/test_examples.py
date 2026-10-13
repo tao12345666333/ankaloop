@@ -185,7 +185,7 @@ async def test_web_development_workflow_task_tool_runs_with_mock_provider(tmp_pa
     )
 
     with (
-        patch("ankaloop.agent.Path.home") as mock_home,
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
         patch("ankaloop.agent.load_config", return_value=cfg),
         patch("ankaloop.agent.run_pre_tool_use_hooks", new=AsyncMock(return_value=HookOutput())),
         patch("ankaloop.agent.run_post_tool_use_hooks", new=AsyncMock(return_value=HookOutput())),
@@ -193,7 +193,6 @@ async def test_web_development_workflow_task_tool_runs_with_mock_provider(tmp_pa
         patch("ankaloop.agent.Agent._run_memory_review", new=AsyncMock(return_value=False)),
         patch("ankaloop.agent.Agent.run", new=fake_subagent_run),
     ):
-        mock_home.return_value = tmp_path
         agent = Agent(agent_spec=agent_spec, session_id="example-session")
         result = await agent._enhanced_chat_with_tools(
             llm_client=ParentMockLLM(),

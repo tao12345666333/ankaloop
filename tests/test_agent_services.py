@@ -28,7 +28,7 @@ def _services() -> ApplicationServices:
 
 def test_agent_composes_stage_one_services(tmp_path):
     services = _services()
-    with patch("ankaloop.agent.Path.home", return_value=tmp_path):
+    with patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"):
         agent = Agent(services=services)
 
     assert isinstance(agent.context_builder, ContextBuilder)
@@ -39,7 +39,7 @@ def test_agent_composes_stage_one_services(tmp_path):
 
 @pytest.mark.asyncio
 async def test_process_message_compatibility_entry_delegates(tmp_path):
-    with patch("ankaloop.agent.Path.home", return_value=tmp_path):
+    with patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"):
         agent = Agent(services=_services())
     agent.turn_service.process_message = AsyncMock(return_value="done")  # type: ignore[method-assign]
 
@@ -50,7 +50,7 @@ async def test_process_message_compatibility_entry_delegates(tmp_path):
 @pytest.mark.asyncio
 async def test_application_session_service_owns_completion_metrics(tmp_path):
     services = _services()
-    with patch("ankaloop.agent.Path.home", return_value=tmp_path):
+    with patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"):
         agent = Agent(services=services)
     agent.turn_service.process_message = AsyncMock(return_value="done")  # type: ignore[method-assign]
 
@@ -64,7 +64,7 @@ async def test_application_session_service_owns_completion_metrics(tmp_path):
 
 def test_application_session_metrics_do_not_collide_for_reused_session_ids(tmp_path):
     services = _services()
-    with patch("ankaloop.agent.Path.home", return_value=tmp_path):
+    with patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"):
         first = Agent(session_id="shared", services=services)
         second = Agent(session_id="shared", services=services)
 
@@ -73,7 +73,7 @@ def test_application_session_metrics_do_not_collide_for_reused_session_ids(tmp_p
 
 @pytest.mark.asyncio
 async def test_context_and_tool_loop_compatibility_entries_delegate(tmp_path):
-    with patch("ankaloop.agent.Path.home", return_value=tmp_path):
+    with patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"):
         agent = Agent(services=_services())
     agent.context_builder.build_tools_and_registry = AsyncMock(  # type: ignore[method-assign]
         return_value=([], {})
@@ -115,7 +115,7 @@ async def test_context_builder_uses_injected_tool_registry(tmp_path):
         context=ContextConfig(progressive_tools=False),
     )
     with (
-        patch("ankaloop.agent.Path.home", return_value=tmp_path),
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
         patch("ankaloop.agent.load_config", return_value=config),
     ):
         agent = Agent(services=services)
@@ -127,7 +127,7 @@ async def test_context_builder_uses_injected_tool_registry(tmp_path):
 def test_named_factory_uses_injected_agent_registry(tmp_path):
     services = _services()
     with (
-        patch("ankaloop.agent.Path.home", return_value=tmp_path),
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
         patch("ankaloop.agent.get_agent_registry", side_effect=AssertionError("global registry used")),
     ):
         agent = create_agent_by_name("coder", services=services)
@@ -139,7 +139,7 @@ def test_named_factory_uses_injected_agent_registry(tmp_path):
 async def test_session_manager_propagates_application_services(tmp_path):
     services = _services()
     manager = SessionManager(ServerConfig(work_dir=tmp_path), services)
-    with patch("ankaloop.agent.Path.home", return_value=tmp_path):
+    with patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"):
         session = await manager.create_session(cwd=str(tmp_path))
 
     assert session.agent.services is services
