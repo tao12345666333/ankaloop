@@ -61,17 +61,25 @@ class ToolLoop:
         self._agent._attach_context_overflow_observer(llm_client)
 
         # Override the chat function to add our tracking
-        result = await self._agent._enhanced_chat_with_tools(
-            llm_client=llm_client,
-            messages=messages,
-            tools=tools,
-            tool_registry=tool_registry,
-            stream=stream,
-            status=status,
-            work_dir=work_dir,
-            return_message_delta=True,
-            cfg=cfg,
-        )
+        try:
+            result = await self._agent._enhanced_chat_with_tools(
+                llm_client=llm_client,
+                messages=messages,
+                tools=tools,
+                tool_registry=tool_registry,
+                stream=stream,
+                status=status,
+                work_dir=work_dir,
+                return_message_delta=True,
+                cfg=cfg,
+            )
+        finally:
+            # The client is recreated every turn, and callers typically run each
+            # turn on its own event loop (asyncio.run per prompt). Close it here,
+            # on the loop that served its requests: if GC closes it later, the
+            # provider SDK schedules transport cleanup on whatever loop is then
+            # running and fails with "Event loop is closed".
+            await llm_client.aclose()
         assert isinstance(result, tuple)
         return result
 

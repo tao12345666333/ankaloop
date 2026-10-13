@@ -130,7 +130,7 @@ async def test_completed_turn_persists_full_tool_evidence_and_restarts(tmp_path)
             "ankaloop.agent.run_user_prompt_hooks",
             new=AsyncMock(return_value=HookOutput()),
         ),
-        patch("ankaloop.llm.create_llm_client"),
+        patch("ankaloop.llm.create_llm_client", return_value=MagicMock(aclose=AsyncMock())),
     ):
         agent = Agent(session_id="canonical")
         with (
@@ -170,7 +170,7 @@ async def test_failed_and_cancelled_turns_leave_committed_state_unchanged(tmp_pa
             "ankaloop.agent.run_user_prompt_hooks",
             new=AsyncMock(return_value=HookOutput()),
         ),
-        patch("ankaloop.llm.create_llm_client"),
+        patch("ankaloop.llm.create_llm_client", return_value=MagicMock(aclose=AsyncMock())),
     ):
         agent = Agent(session_id="rollback")
         agent._session_state.commit_turn(
@@ -243,7 +243,7 @@ async def test_save_failure_fails_turn_handle_without_advancing_memory(tmp_path)
             "ankaloop.agent.run_user_prompt_hooks",
             new=AsyncMock(return_value=HookOutput()),
         ),
-        patch("ankaloop.llm.create_llm_client"),
+        patch("ankaloop.llm.create_llm_client", return_value=MagicMock(aclose=AsyncMock())),
     ):
         agent = Agent(session_id="commit-failure")
         with (
@@ -308,7 +308,7 @@ async def test_checkpoint_restart_only_compacts_new_committed_prefix(tmp_path):
         patch("ankaloop.agent.SmartCompactor", FakeCompactor),
         patch("ankaloop.agent.estimate_request_tokens", return_value=100),
         patch("ankaloop.agent.estimate_tokens", return_value=100),
-        patch("ankaloop.llm.create_llm_client"),
+        patch("ankaloop.llm.create_llm_client", return_value=MagicMock(aclose=AsyncMock())),
     ):
         agent = Agent(session_id="checkpoint-restart")
         for index in range(4):

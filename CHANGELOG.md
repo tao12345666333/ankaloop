@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Interactive CLI no longer reports "Event loop is closed" after a turn**: the
+  CLI runs each prompt in its own `asyncio.run` loop, and the per-turn LLM
+  client was left for garbage collection without being closed. The provider
+  SDK's HTTP client finalizer then scheduled transport cleanup on whatever loop
+  happened to be running later, and closing connections bound to the earlier,
+  already-closed loop failed with `RuntimeError: Event loop is closed`. LLM
+  clients (`BaseLLMClient.aclose()`) are now closed deterministically on the
+  loop that served them at every creation site: the main turn, compaction, and
+  the pre-compaction memory flush.
+
 - **XDG_CONFIG_HOME honored consistently**: session stores, transcripts, model
   cache, prompt history, and log paths now honor `XDG_CONFIG_HOME` instead of
   hardcoding `~/.config`, matching the config directory resolution. The shared

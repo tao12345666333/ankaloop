@@ -974,6 +974,7 @@ class Agent:
         chance to save important user preferences, facts, and identity
         details to persistent memory.  Failures are silently ignored.
         """
+        client: Any = None
         try:
             cfg = cfg or self._resolve_turn_config()
             model = self._resolve_model_name(cfg)
@@ -1031,6 +1032,11 @@ class Agent:
         except Exception as e:
             logger.debug(f"Memory flush failed (non-critical): {e}")
             return False
+        finally:
+            # Close on this loop; see ToolLoop.run for why the LLM client must
+            # not be left for GC to close on a later event loop.
+            if client is not None:
+                await client.aclose()
 
     async def flush_memory(
         self,

@@ -895,7 +895,7 @@ class TestAgentHistoryManagement:
                 "ankaloop.agent.run_user_prompt_hooks",
                 new=AsyncMock(return_value=HookOutput()),
             ),
-            patch("ankaloop.llm.create_llm_client"),
+            patch("ankaloop.llm.create_llm_client", return_value=MagicMock(aclose=AsyncMock())),
             patch("ankaloop.agent.get_memory_manager", return_value=memory_manager),
             patch("ankaloop.agent.get_transcript_store", return_value=transcript_store) as transcript_getter,
         ):
@@ -1620,7 +1620,7 @@ async def test_process_message_preserves_max_steps_exception(tmp_path):
     status = SimpleNamespace(update=lambda *args, **kwargs: None)
     with (
         patch("ankaloop.agent.run_user_prompt_hooks", return_value=prompt_hook_output),
-        patch("ankaloop.llm.create_llm_client", return_value=MagicMock()),
+        patch("ankaloop.llm.create_llm_client", return_value=MagicMock(aclose=AsyncMock())),
         patch.object(agent, "_create_progress_context") as progress,
         patch.object(agent, "_get_system_prompt", return_value="system"),
         patch.object(agent, "_build_tools_and_registry", return_value=([], {})),

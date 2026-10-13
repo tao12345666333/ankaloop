@@ -168,80 +168,93 @@ class TurnService:
 
                 client = create_llm_client(compaction_chat)
                 self._agent._attach_context_overflow_observer(client)
-                compactor = self._agent._smart_compactor(
-                    client,
-                    model,
-                    model_config=cfg.chat.model_config if cfg.chat else None,
-                )
+                try:
+                    compactor = self._agent._smart_compactor(
+                        client,
+                        model,
+                        model_config=cfg.chat.model_config if cfg.chat else None,
+                    )
 
-                request_tokens = self._agent._estimate_tokens(messages + history_to_add, tools)
-                if (
-                    request_tokens > compactor.threshold_tokens
-                    and self._agent._estimate_tokens(history_to_add) >= compactor.config.min_tokens_to_compact
-                ):
-                    preserve_turns = max(compactor.config.preserve_last // 2, 1)
-                    covered_turn_count = max(len(draft.turns) - preserve_turns, 0)
-                    previous_covered_turns = draft.checkpoint.covered_turn_count if draft.checkpoint is not None else 0
-                    if covered_turn_count > previous_covered_turns:
-                        if not self._agent.ephemeral:
-                            status.update(f"[bold]Agent {self._agent.name}[/bold] saving memories before compaction...")
-                            await self._agent._run_memory_review(
-                                conversation_snapshot=history_to_add,
-                                system_prompt=system_prompt,
-                                work_dir=work_dir,
-                                status=status,
-                                cfg=turn_config,
-                            )
-                            self._agent._last_memory_review_turn_count = len(draft.turns) + 1
-                        status.update(f"[bold]Agent {self._agent.name}[/bold] compacting context...")
-                        covered_message_count = draft.turns[covered_turn_count - 1].end_message
-                        previous_message_count = (
-                            draft.checkpoint.covered_message_count if draft.checkpoint is not None else 0
+                    request_tokens = self._agent._estimate_tokens(messages + history_to_add, tools)
+                    if (
+                        request_tokens > compactor.threshold_tokens
+                        and self._agent._estimate_tokens(history_to_add) >= compactor.config.min_tokens_to_compact
+                    ):
+                        preserve_turns = max(compactor.config.preserve_last // 2, 1)
+                        covered_turn_count = max(len(draft.turns) - preserve_turns, 0)
+                        previous_covered_turns = (
+                            draft.checkpoint.covered_turn_count if draft.checkpoint is not None else 0
                         )
-                        checkpoint_input = deepcopy(draft.checkpoint.context) if draft.checkpoint is not None else []
-                        checkpoint_input.extend(deepcopy(draft.messages[previous_message_count:covered_message_count]))
-                        with internal_span(sc.SPAN_COMPACT_CONTEXT) as compact_span:
-                            checkpoint_context, compaction_result = await asyncio.to_thread(
-                                compactor.compact_checkpoint,
-                                checkpoint_input,
+                        if covered_turn_count > previous_covered_turns:
+                            if not self._agent.ephemeral:
+                                status.update(
+                                    f"[bold]Agent {self._agent.name}[/bold] saving memories before compaction..."
+                                )
+                                await self._agent._run_memory_review(
+                                    conversation_snapshot=history_to_add,
+                                    system_prompt=system_prompt,
+                                    work_dir=work_dir,
+                                    status=status,
+                                    cfg=turn_config,
+                                )
+                                self._agent._last_memory_review_turn_count = len(draft.turns) + 1
+                            status.update(f"[bold]Agent {self._agent.name}[/bold] compacting context...")
+                            covered_message_count = draft.turns[covered_turn_count - 1].end_message
+                            previous_message_count = (
+                                draft.checkpoint.covered_message_count if draft.checkpoint is not None else 0
                             )
-                            draft.checkpoint = CompactionCheckpoint(
-                                context=checkpoint_context,
-                                covered_message_count=covered_message_count,
-                                covered_turn_count=covered_turn_count,
-                                generation=(draft.checkpoint.generation + 1 if draft.checkpoint is not None else 1),
-                                strategy=compaction_result.strategy_used.value,
-                                strategy_version=1,
-                                original_tokens=compaction_result.original_tokens,
-                                compacted_tokens=compaction_result.compacted_tokens,
+                            checkpoint_input = (
+                                deepcopy(draft.checkpoint.context) if draft.checkpoint is not None else []
                             )
-                            set_attributes(
-                                compact_span,
+                            checkpoint_input.extend(
+                                deepcopy(draft.messages[previous_message_count:covered_message_count])
+                            )
+                            with internal_span(sc.SPAN_COMPACT_CONTEXT) as compact_span:
+                                checkpoint_context, compaction_result = await asyncio.to_thread(
+                                    compactor.compact_checkpoint,
+                                    checkpoint_input,
+                                )
+                                draft.checkpoint = CompactionCheckpoint(
+                                    context=checkpoint_context,
+                                    covered_message_count=covered_message_count,
+                                    covered_turn_count=covered_turn_count,
+                                    generation=(draft.checkpoint.generation + 1 if draft.checkpoint is not None else 1),
+                                    strategy=compaction_result.strategy_used.value,
+                                    strategy_version=1,
+                                    original_tokens=compaction_result.original_tokens,
+                                    compacted_tokens=compaction_result.compacted_tokens,
+                                )
+                                set_attributes(
+                                    compact_span,
+                                    {
+                                        sc.ANKALOOP_COMPACTION_STRATEGY: draft.checkpoint.strategy,
+                                        sc.ANKALOOP_COMPACTION_INPUT_TOKENS: compaction_result.original_tokens,
+                                        sc.ANKALOOP_COMPACTION_OUTPUT_TOKENS: compaction_result.compacted_tokens,
+                                        sc.ANKALOOP_COMPACTION_GENERATION: draft.checkpoint.generation,
+                                    },
+                                )
+                            self._agent._emit_event(
+                                "context.compacted",
                                 {
-                                    sc.ANKALOOP_COMPACTION_STRATEGY: draft.checkpoint.strategy,
-                                    sc.ANKALOOP_COMPACTION_INPUT_TOKENS: compaction_result.original_tokens,
-                                    sc.ANKALOOP_COMPACTION_OUTPUT_TOKENS: compaction_result.compacted_tokens,
-                                    sc.ANKALOOP_COMPACTION_GENERATION: draft.checkpoint.generation,
+                                    "input_tokens": compaction_result.original_tokens,
+                                    "output_tokens": compaction_result.compacted_tokens,
                                 },
                             )
-                        self._agent._emit_event(
-                            "context.compacted",
-                            {
-                                "input_tokens": compaction_result.original_tokens,
-                                "output_tokens": compaction_result.compacted_tokens,
-                            },
-                        )
-                        history_to_add = draft.model_context(turn_messages)
-                        conversation_tokens = self._agent._estimate_tokens(history_to_add)
-                        system_prompt = self._agent._get_system_prompt(
-                            work_dir,
-                            user_input=user_input,
-                            conversation_tokens=conversation_tokens,
-                            cfg=turn_config,
-                        )
-                        messages[0]["content"] = system_prompt
-                        self._agent.reset_memory_context_snapshot()
-                        self._agent.console.print("[dim]Context compacted to reduce token usage[/dim]")
+                            history_to_add = draft.model_context(turn_messages)
+                            conversation_tokens = self._agent._estimate_tokens(history_to_add)
+                            system_prompt = self._agent._get_system_prompt(
+                                work_dir,
+                                user_input=user_input,
+                                conversation_tokens=conversation_tokens,
+                                cfg=turn_config,
+                            )
+                            messages[0]["content"] = system_prompt
+                            self._agent.reset_memory_context_snapshot()
+                            self._agent.console.print("[dim]Context compacted to reduce token usage[/dim]")
+                finally:
+                    # See ToolLoop.run for why the client must be closed on the
+                    # loop that served it rather than left for GC to close later.
+                    await client.aclose()
 
                 messages.extend(history_to_add)
 
