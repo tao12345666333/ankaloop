@@ -2,10 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
 from ..runtime import TurnEvent, TurnHandle, TurnStatus
+
+DEFAULT_KEEPALIVE_INTERVAL = 15.0
+"""Default seconds of stream inactivity before a keepalive ``ping`` frame is sent."""
+
+
+async def _next_event(
+    queue: asyncio.Queue[TurnEvent],
+    keepalive_interval: float | None,
+) -> TurnEvent | None:
+    """Wait for the next turn event, returning None when the stream stays idle."""
+    if keepalive_interval is None:
+        return await queue.get()
+    try:
+        return await asyncio.wait_for(queue.get(), timeout=keepalive_interval)
+    except TimeoutError:
+        return None
 
 
 def _event_frame(event: TurnEvent, handle: TurnHandle) -> dict[str, Any] | None:
@@ -48,8 +65,22 @@ def _event_frame(event: TurnEvent, handle: TurnHandle) -> dict[str, Any] | None:
     return None
 
 
-async def turn_frames(handle: TurnHandle, session_id: str) -> AsyncGenerator[dict[str, Any], None]:
-    """Relay one turn without making the transport own its execution lifecycle."""
+async def turn_frames(
+    handle: TurnHandle,
+    session_id: str,
+    *,
+    keepalive_interval: float | None = DEFAULT_KEEPALIVE_INTERVAL,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Relay one turn without making the transport own its execution lifecycle.
+
+    Args:
+        handle: The turn to relay.
+        session_id: The session the turn belongs to.
+        keepalive_interval: Seconds the stream may stay idle before a
+            ``{"type": "ping"}`` frame is emitted, keeping proxies and clients
+            with read timeouts from dropping the connection during long tool
+            executions. ``None`` disables keepalive frames.
+    """
     queue = handle.subscribe()
     sent_chunk = False
     try:
@@ -74,7 +105,10 @@ async def turn_frames(handle: TurnHandle, session_id: str) -> AsyncGenerator[dic
                 assert frame is not None
                 yield frame
                 return
-            event = await queue.get()
+            event = await _next_event(queue, keepalive_interval)
+            if event is None:
+                yield {"type": "ping", "turn_id": handle.id}
+                continue
             frame = _event_frame(event, handle)
             if frame is None:
                 continue

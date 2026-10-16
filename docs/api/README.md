@@ -235,6 +235,20 @@ turn status endpoint after disconnecting.
 The shared HTTP/WebSocket frame types are `start`, `chunk`, `tool`, `error`, and `complete`.
 Slow consumers receive an `error` frame with code `SLOW_CONSUMER`; the turn continues running.
 
+When a turn produces no events for `stream_keepalive_seconds` (server configuration, default 15s),
+the stream emits a keepalive frame so proxies and clients with read timeouts do not drop healthy
+connections during long tool executions:
+
+```jsonl
+{"type":"ping","turn_id":"turn-123"}
+```
+
+Consumers should ignore unknown frame types. With keepalives, a bounded read timeout is safe: a
+silent gap longer than the keepalive interval means the connection is dead, not that the turn is
+still working. The Python client can also relax its side via `stream_timeout` on `HTTPClient`,
+`WebSocketClient`, or `AnkaloopClient` (seconds, an `httpx.Timeout`, or `None` to wait
+indefinitely); prompt timeouts raise `StreamTimeoutError` (a `PromptError` subclass).
+
 #### GET `/sessions/{id}/turns/{turn_id}`
 
 Return the state and terminal result, when available, of a runtime-retained turn.

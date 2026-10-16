@@ -17,6 +17,7 @@ from .exceptions import (
     PromptError,
     ServerError,
     SessionNotFoundError,
+    StreamTimeoutError,
     TimeoutError,
 )
 
@@ -38,6 +39,7 @@ class HTTPClient(BaseClient):
         url: str,
         *,
         timeout: float = 30.0,
+        stream_timeout: float | httpx.Timeout | None = 300.0,
         retry_attempts: int = 3,
         headers: dict[str, str] | None = None,
         api_key: str | None = None,
@@ -47,12 +49,18 @@ class HTTPClient(BaseClient):
         Args:
             url: Server URL.
             timeout: Default timeout in seconds.
+            stream_timeout: Timeout for prompt requests: seconds, an
+                ``httpx.Timeout`` for fine-grained control (e.g. an unbounded
+                ``read`` timeout with bounded ``connect``/``write``), or
+                ``None`` to wait indefinitely. For streaming prompts this is
+                the read timeout — the maximum gap between stream frames.
             retry_attempts: Number of retry attempts for failed requests.
             headers: Optional custom headers.
             api_key: Optional API key sent as a Bearer token.
         """
         self._url = url.rstrip("/")
         self._timeout = timeout
+        self._stream_timeout = stream_timeout
         self._retry_attempts = retry_attempts
         self._headers = dict(headers or {})
         if api_key is not None and not any(key.lower() == "authorization" for key in self._headers):
@@ -107,6 +115,12 @@ class HTTPClient(BaseClient):
         if not self._client:
             raise ConnectionError("Client is not connected")
         return self._client
+
+    def _read_timeout_seconds(self) -> float | None:
+        """Return the configured prompt read timeout in seconds, if known."""
+        if isinstance(self._stream_timeout, httpx.Timeout):
+            return self._stream_timeout.read
+        return self._stream_timeout
 
     async def _request(
         self,
@@ -314,7 +328,7 @@ class HTTPClient(BaseClient):
             response = await client.post(
                 url,
                 json={"content": content, "priority": priority, "stream": False},
-                timeout=300.0,  # Long timeout for non-streaming
+                timeout=self._stream_timeout,
             )
 
             if response.status_code == 404:
@@ -333,8 +347,15 @@ class HTTPClient(BaseClient):
 
         except (SessionNotFoundError, PromptError):
             raise
+        except httpx.TimeoutException as e:
+            raise StreamTimeoutError(
+                f"Prompt timed out ({type(e).__name__}); the turn may still be running server-side",
+                session_id=session_id,
+                timeout=self._read_timeout_seconds(),
+            ) from e
         except Exception as e:
-            raise PromptError(f"Prompt failed: {e}", session_id=session_id) from e
+            detail = str(e) or type(e).__name__
+            raise PromptError(f"Prompt failed: {detail}", session_id=session_id) from e
 
     async def _stream_prompt(
         self,
@@ -360,7 +381,7 @@ class HTTPClient(BaseClient):
                 "POST",
                 url,
                 json={"content": content, "priority": priority, "stream": True},
-                timeout=300.0,
+                timeout=self._stream_timeout,
             ) as response:
                 if response.status_code == 404:
                     raise SessionNotFoundError(session_id)
@@ -435,8 +456,15 @@ class HTTPClient(BaseClient):
 
         except (SessionNotFoundError, PromptError):
             raise
+        except httpx.TimeoutException as e:
+            raise StreamTimeoutError(
+                f"Stream timed out ({type(e).__name__}); the turn may still be running server-side",
+                session_id=session_id,
+                timeout=self._read_timeout_seconds(),
+            ) from e
         except Exception as e:
-            raise PromptError(f"Stream failed: {e}", session_id=session_id) from e
+            detail = str(e) or type(e).__name__
+            raise PromptError(f"Stream failed: {detail}", session_id=session_id) from e
 
     async def cancel(self, session_id: str, *, force: bool = False) -> None:
         """Cancel the current operation in a session.

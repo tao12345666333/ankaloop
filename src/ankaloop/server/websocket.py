@@ -20,6 +20,7 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from ..runtime import ErrorEnvelope
 from ..tracing import attach_carrier, carrier_from_headers
+from .config import get_server_config
 from .interaction import apply_interaction_result, route_server_interaction
 from .models import EventType
 from .session_manager import SessionNotFoundError, get_session_manager
@@ -399,7 +400,8 @@ async def handle_prompt(websocket: WebSocket, msg_id: str, payload: dict[str, An
                 stream=True,
                 priority=payload.get("priority", "normal"),
             )
-            async for frame in turn_frames(handle, session_id):
+            keepalive = get_server_config().stream_keepalive_seconds
+            async for frame in turn_frames(handle, session_id, keepalive_interval=keepalive):
                 await connection_manager.send(
                     websocket,
                     {"type": "response", "id": msg_id, "payload": frame},

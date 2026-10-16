@@ -176,5 +176,35 @@ class PromptError(AnkaloopClientError):
         details = kwargs.pop("details", {})
         if session_id:
             details["session_id"] = session_id
-        super().__init__(message, code="PROMPT_ERROR", details=details, **kwargs)
+        code = kwargs.pop("code", "PROMPT_ERROR")
+        super().__init__(message, code=code, details=details, **kwargs)
         self.session_id = session_id
+
+
+class StreamTimeoutError(PromptError):
+    """Raised when a prompt times out waiting for response data.
+
+    The turn itself may still be running server-side; only the client's
+    wait for the response was interrupted.
+    """
+
+    def __init__(
+        self,
+        message: str = "Stream timed out",
+        session_id: str | None = None,
+        timeout: float | None = None,
+        **kwargs,
+    ):
+        """Initialize the exception.
+
+        Args:
+            message: Error message.
+            session_id: The session ID related to the error.
+            timeout: The idle timeout in seconds that was exceeded, if known.
+            **kwargs: Additional arguments for PromptError.
+        """
+        details = kwargs.pop("details", {})
+        if timeout is not None:
+            details["timeout"] = timeout
+        super().__init__(message, session_id=session_id, code="STREAM_TIMEOUT", details=details, **kwargs)
+        self.timeout = timeout

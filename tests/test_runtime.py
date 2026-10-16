@@ -278,6 +278,64 @@ async def test_closing_turn_relay_unsubscribes_without_cancelling_turn():
 
 
 @pytest.mark.asyncio
+async def test_turn_frames_emits_keepalive_ping_when_idle():
+    release = asyncio.Event()
+
+    async def process(request):
+        await release.wait()
+        return request.prompt
+
+    runtime = SessionRuntime("keepalive", process)
+    handle = await runtime.submit("result")
+    frames = turn_frames(handle, "keepalive", keepalive_interval=0.01)
+
+    assert (await anext(frames))["type"] == "start"
+    ping = await asyncio.wait_for(anext(frames), timeout=1)
+    assert ping == {"type": "ping", "turn_id": handle.id}
+    assert handle.done is False
+
+    release.set()
+    remaining = [frame async for frame in frames]
+    content_frames = [frame for frame in remaining if frame["type"] != "ping"]
+    assert [frame["type"] for frame in content_frames] == ["chunk", "complete"]
+    assert content_frames[0]["content"] == "result"
+    assert await handle.wait() == "result"
+
+
+@pytest.mark.asyncio
+async def test_turn_frames_keepalive_disabled_stays_silent_when_idle():
+    release = asyncio.Event()
+
+    async def process(request):
+        await release.wait()
+        return request.prompt
+
+    runtime = SessionRuntime("no-keepalive", process)
+    handle = await runtime.submit("result")
+    frames = turn_frames(handle, "no-keepalive", keepalive_interval=None)
+
+    collected = []
+    drained = asyncio.Event()
+
+    async def drain():
+        try:
+            async for frame in frames:
+                collected.append(frame)
+        finally:
+            drained.set()
+
+    task = asyncio.create_task(drain())
+    await asyncio.sleep(0.05)
+    assert [frame["type"] for frame in collected] == ["start"]
+
+    release.set()
+    await asyncio.wait_for(drained.wait(), timeout=1)
+    await task
+    assert [frame["type"] for frame in collected] == ["start", "chunk", "complete"]
+    assert await handle.wait() == "result"
+
+
+@pytest.mark.asyncio
 async def test_observer_failure_cannot_strand_runtime_work():
     observed = []
 

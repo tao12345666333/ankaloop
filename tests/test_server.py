@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from ankaloop.server import ServerConfig, create_app
-from ankaloop.server.config import AuthConfig, is_loopback_host
+from ankaloop.server.config import AuthConfig, get_server_config, is_loopback_host
 from ankaloop.server.models import SessionStatus
 from ankaloop.server.session_manager import (
     ManagedSession,
@@ -293,6 +293,31 @@ class TestSessionEndpoints:
         turn_id = frames[0]["turn_id"]
         turn_response = client.get(f"/api/v1/sessions/{session_id}/turns/{turn_id}")
         assert turn_response.json()["status"] == "completed"
+
+    def test_prompt_stream_emits_keepalive_ping_for_idle_turn(self, client, monkeypatch):
+        """Idle turns emit ping frames so consumers can tell working from dead."""
+        monkeypatch.setattr(get_server_config(), "stream_keepalive_seconds", 0.05)
+        create_resp = client.post("/api/v1/sessions", json={"cwd": "/tmp"})
+        session_id = create_resp.json()["id"]
+        managed = asyncio.run(get_session_manager().get_session(session_id))
+
+        async def process(_request):
+            await asyncio.sleep(0.2)
+            return "slow done"
+
+        managed.agent._runtime._processor = process
+        with client.stream(
+            "POST",
+            f"/api/v1/sessions/{session_id}/prompt/stream",
+            json={"content": "hello", "stream": True},
+        ) as response:
+            frames = [json.loads(line) for line in response.iter_lines() if line]
+
+        types = [frame["type"] for frame in frames]
+        assert types[0] == "start"
+        assert types[-1] == "complete"
+        assert "ping" in types
+        assert set(types) <= {"start", "ping", "chunk", "complete"}
 
     def test_prompt_new_session_command_non_stream(self, client):
         """Test /new through the non-stream endpoint returns new session metadata."""
