@@ -40,6 +40,7 @@ class HTTPClient(BaseClient):
         *,
         timeout: float = 30.0,
         stream_timeout: float | httpx.Timeout | None = 300.0,
+        prompt_timeout: float | httpx.Timeout | None = 300.0,
         retry_attempts: int = 3,
         headers: dict[str, str] | None = None,
         api_key: str | None = None,
@@ -49,11 +50,14 @@ class HTTPClient(BaseClient):
         Args:
             url: Server URL.
             timeout: Default timeout in seconds.
-            stream_timeout: Timeout for prompt requests: seconds, an
+            stream_timeout: Timeout for streaming prompt requests: seconds, an
                 ``httpx.Timeout`` for fine-grained control (e.g. an unbounded
                 ``read`` timeout with bounded ``connect``/``write``), or
-                ``None`` to wait indefinitely. For streaming prompts this is
-                the read timeout — the maximum gap between stream frames.
+                ``None`` to wait indefinitely. This is the read timeout — the
+                maximum gap between stream frames.
+            prompt_timeout: Timeout for non-streaming prompt requests, bounding
+                the entire wait until the turn completes. Accepts the same
+                values as ``stream_timeout``.
             retry_attempts: Number of retry attempts for failed requests.
             headers: Optional custom headers.
             api_key: Optional API key sent as a Bearer token.
@@ -61,6 +65,7 @@ class HTTPClient(BaseClient):
         self._url = url.rstrip("/")
         self._timeout = timeout
         self._stream_timeout = stream_timeout
+        self._prompt_timeout = prompt_timeout
         self._retry_attempts = retry_attempts
         self._headers = dict(headers or {})
         if api_key is not None and not any(key.lower() == "authorization" for key in self._headers):
@@ -116,11 +121,12 @@ class HTTPClient(BaseClient):
             raise ConnectionError("Client is not connected")
         return self._client
 
-    def _read_timeout_seconds(self) -> float | None:
-        """Return the configured prompt read timeout in seconds, if known."""
-        if isinstance(self._stream_timeout, httpx.Timeout):
-            return self._stream_timeout.read
-        return self._stream_timeout
+    @staticmethod
+    def _read_timeout_seconds(timeout: float | httpx.Timeout | None) -> float | None:
+        """Return the read timeout of a configured prompt timeout, if known."""
+        if isinstance(timeout, httpx.Timeout):
+            return timeout.read
+        return timeout
 
     async def _request(
         self,
@@ -328,7 +334,7 @@ class HTTPClient(BaseClient):
             response = await client.post(
                 url,
                 json={"content": content, "priority": priority, "stream": False},
-                timeout=self._stream_timeout,
+                timeout=self._prompt_timeout,
             )
 
             if response.status_code == 404:
@@ -351,7 +357,7 @@ class HTTPClient(BaseClient):
             raise StreamTimeoutError(
                 f"Prompt timed out ({type(e).__name__}); the turn may still be running server-side",
                 session_id=session_id,
-                timeout=self._read_timeout_seconds(),
+                timeout=self._read_timeout_seconds(self._prompt_timeout),
             ) from e
         except Exception as e:
             detail = str(e) or type(e).__name__
@@ -460,7 +466,7 @@ class HTTPClient(BaseClient):
             raise StreamTimeoutError(
                 f"Stream timed out ({type(e).__name__}); the turn may still be running server-side",
                 session_id=session_id,
-                timeout=self._read_timeout_seconds(),
+                timeout=self._read_timeout_seconds(self._stream_timeout),
             ) from e
         except Exception as e:
             detail = str(e) or type(e).__name__

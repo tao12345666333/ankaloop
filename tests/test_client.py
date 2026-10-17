@@ -229,19 +229,19 @@ class _FakeStreamContext:
 class TestHTTPClientStreaming:
     """Test HTTPClient prompt streaming timeouts and error fidelity."""
 
-    def test_stream_timeout_configuration(self):
-        """stream_timeout accepts seconds, httpx.Timeout, or None."""
-        assert HTTPClient("http://localhost:8080")._stream_timeout == 300.0
+    def test_prompt_timeout_configuration(self):
+        """stream_timeout and prompt_timeout accept seconds, httpx.Timeout, or None."""
+        client = HTTPClient("http://localhost:8080")
+        assert client._stream_timeout == 300.0
+        assert client._prompt_timeout == 300.0
 
-        unlimited = HTTPClient("http://localhost:8080", stream_timeout=None)
+        unlimited = HTTPClient("http://localhost:8080", stream_timeout=None, prompt_timeout=None)
         assert unlimited._stream_timeout is None
-        assert unlimited._read_timeout_seconds() is None
+        assert unlimited._prompt_timeout is None
+        assert HTTPClient._read_timeout_seconds(None) is None
 
-        custom = HTTPClient(
-            "http://localhost:8080",
-            stream_timeout=httpx.Timeout(connect=5.0, read=42.0, write=5.0, pool=5.0),
-        )
-        assert custom._read_timeout_seconds() == 42.0
+        custom = httpx.Timeout(connect=5.0, read=42.0, write=5.0, pool=5.0)
+        assert HTTPClient._read_timeout_seconds(custom) == 42.0
 
     @pytest.mark.asyncio
     async def test_stream_prompt_passes_configured_timeout(self):
@@ -307,9 +307,9 @@ class TestHTTPClientStreaming:
                 pass
 
     @pytest.mark.asyncio
-    async def test_non_stream_prompt_uses_stream_timeout(self):
-        """Non-streaming prompts use the configured stream_timeout."""
-        client = HTTPClient("http://localhost:8080", stream_timeout=60.0)
+    async def test_non_stream_prompt_uses_prompt_timeout(self):
+        """Non-streaming prompts use prompt_timeout, not stream_timeout."""
+        client = HTTPClient("http://localhost:8080", stream_timeout=5.0, prompt_timeout=60.0)
         client._client = MagicMock()
         response = MagicMock(status_code=200)
         response.json.return_value = {"response": "done"}
@@ -469,15 +469,20 @@ class TestWebSocketClient:
         assert client._client._headers["X-Custom"] == "value"
 
     @pytest.mark.asyncio
-    async def test_client_passes_stream_timeout_to_http_client(self, monkeypatch):
+    async def test_client_passes_prompt_timeouts_to_http_client(self, monkeypatch):
         async def connect_without_network(client):
             client._client = object()
 
         monkeypatch.setattr(HTTPClient, "connect", connect_without_network)
-        client = AnkaloopClient.remote("https://example.test", stream_timeout=None)
+        client = AnkaloopClient.remote(
+            "https://example.test",
+            stream_timeout=None,
+            prompt_timeout=12.0,
+        )
         await client.connect()
         assert isinstance(client._client, HTTPClient)
         assert client._client._stream_timeout is None
+        assert client._client._prompt_timeout == 12.0
 
 
 # ============================================================================

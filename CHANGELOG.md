@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Configurable prompt stream timeout (`stream_timeout`)**: `HTTPClient`, `WebSocketClient`, and
-  the `AnkaloopClient` facade now accept a `stream_timeout` for prompt requests — seconds, an
-  `httpx.Timeout` for fine-grained control (e.g. an unbounded `read` timeout with bounded
-  `connect`/`write`), or `None` to wait indefinitely — replacing the hardcoded 300 seconds. For
-  streaming prompts this bounds the gap between stream frames, so clients consuming turns with
-  long-running tool calls can disable it without losing bounded connect/write timeouts.
+- **Configurable prompt timeouts (`stream_timeout` / `prompt_timeout`)**: `HTTPClient`,
+  `WebSocketClient`, and the `AnkaloopClient` facade now accept a `stream_timeout` for streaming
+  prompt requests, and `HTTPClient` and the facade also accept a `prompt_timeout` for
+  non-streaming ones — each is seconds, an `httpx.Timeout` for fine-grained control (e.g. an
+  unbounded `read` timeout with bounded `connect`/`write`), or `None` to wait indefinitely,
+  replacing the hardcoded 300 seconds. `stream_timeout` bounds the gap between stream frames, so
+  clients consuming turns with long-running tool calls can disable it without losing bounded
+  connect/write timeouts; `prompt_timeout` bounds the entire wait until the turn completes.
 - **Server keepalive frames on prompt streams**: when a turn produces no events for
   `stream_keepalive_seconds` (new `ServerConfig` field, default 15s, `None` disables), the NDJSON
   and WebSocket prompt streams emit a `{"type": "ping"}` frame. Proxies and clients with read

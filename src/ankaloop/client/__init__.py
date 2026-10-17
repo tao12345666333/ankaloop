@@ -86,6 +86,7 @@ class AnkaloopClient:
         *,
         timeout: float = 30.0,
         stream_timeout: float | httpx.Timeout | None = 300.0,
+        prompt_timeout: float | httpx.Timeout | None = 300.0,
         retry_attempts: int = 3,
         mode: ClientMode | None = None,
         headers: dict[str, str] | None = None,
@@ -96,10 +97,12 @@ class AnkaloopClient:
         Args:
             url: Server URL for remote mode. If None, uses embedded mode.
             timeout: Default timeout in seconds.
-            stream_timeout: Timeout for prompt requests: seconds, an
+            stream_timeout: Timeout for streaming prompt requests: seconds, an
                 ``httpx.Timeout`` for fine-grained control, or ``None`` to
-                wait indefinitely. For streaming prompts this bounds the gap
-                between stream frames.
+                wait indefinitely. This bounds the gap between stream frames.
+            prompt_timeout: Timeout for non-streaming prompt requests, bounding
+                the entire wait until the turn completes. Accepts the same
+                values as ``stream_timeout``.
             retry_attempts: Number of retry attempts for failed requests.
             mode: Explicit mode selection. If None, auto-detects.
             headers: Optional custom remote request headers.
@@ -108,6 +111,7 @@ class AnkaloopClient:
         self._url = url
         self._timeout = timeout
         self._stream_timeout = stream_timeout
+        self._prompt_timeout = prompt_timeout
         self._retry_attempts = retry_attempts
         self._mode = mode or (ClientMode.REMOTE if url else ClientMode.EMBEDDED)
         self._headers = headers
@@ -183,6 +187,7 @@ class AnkaloopClient:
                 url=self._url,
                 timeout=self._timeout,
                 stream_timeout=self._stream_timeout,
+                prompt_timeout=self._prompt_timeout,
                 retry_attempts=self._retry_attempts,
                 headers=self._headers,
                 api_key=self._api_key,
