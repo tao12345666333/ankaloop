@@ -16,7 +16,12 @@ async def _next_event(
     queue: asyncio.Queue[TurnEvent],
     keepalive_interval: float | None,
 ) -> TurnEvent | None:
-    """Wait for the next turn event, returning None when the stream stays idle."""
+    """Wait for the next turn event, returning None when the stream stays idle.
+
+    Cancelling the ``queue.get()`` on timeout can, in a rare race with event
+    delivery, drop that one event; the relay tolerates this because terminal
+    state is re-derived from the handle once the queue drains.
+    """
     if keepalive_interval is None:
         return await queue.get()
     try:

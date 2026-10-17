@@ -247,7 +247,10 @@ Consumers should ignore unknown frame types. With keepalives, a bounded read tim
 silent gap longer than the keepalive interval means the connection is dead, not that the turn is
 still working. The Python client can also relax its side via `stream_timeout` on `HTTPClient`,
 `WebSocketClient`, or `AnkaloopClient` (seconds, an `httpx.Timeout`, or `None` to wait
-indefinitely); prompt timeouts raise `StreamTimeoutError` (a `PromptError` subclass).
+indefinitely); prompt timeouts raise `StreamTimeoutError` (a `PromptError` subclass). The same
+`stream_timeout` knob serves both prompt modes: for streaming prompts it bounds only the gap
+between frames, while for non-streaming prompts it bounds the entire wait until the turn
+completes.
 
 #### GET `/sessions/{id}/turns/{turn_id}`
 
