@@ -57,6 +57,11 @@ class ServerConfig(BaseModel):
     session_timeout_minutes: int = 60 * 24  # 24 hours
     max_sessions: int = 100
 
+    # Streaming settings
+    # Seconds a prompt stream may stay idle before a keepalive ping frame is
+    # sent; None disables keepalive frames.
+    stream_keepalive_seconds: float | None = 15.0
+
     # Working directory
     work_dir: Path | None = None
 

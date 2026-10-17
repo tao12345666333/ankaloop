@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from ...runtime import ErrorEnvelope
+from ..config import get_server_config
 from ..interaction import apply_interaction_result, route_server_interaction
 from ..models import (
     CancelRequest,
@@ -324,7 +325,8 @@ async def send_prompt_stream(session_id: str, request: PromptRequest) -> Streami
                     priority=request.priority.value,
                 )
                 message_id = handle.id
-                async for frame in turn_frames(handle, session_id):
+                keepalive = get_server_config().stream_keepalive_seconds
+                async for frame in turn_frames(handle, session_id, keepalive_interval=keepalive):
                     yield json.dumps(frame) + "\n"
             else:
                 yield (

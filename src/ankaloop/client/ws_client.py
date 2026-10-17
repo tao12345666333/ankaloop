@@ -18,7 +18,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from .base import ResponseChunk
-from .exceptions import ConnectionError, PromptError, SessionNotFoundError
+from .exceptions import ConnectionError, PromptError, SessionNotFoundError, StreamTimeoutError
 
 
 class WebSocketClient:
@@ -41,6 +41,7 @@ class WebSocketClient:
         session_id: str | None = None,
         *,
         timeout: float = 30.0,
+        stream_timeout: float | None = 300.0,
         headers: dict[str, str] | None = None,
         api_key: str | None = None,
     ):
@@ -50,12 +51,15 @@ class WebSocketClient:
             url: Server URL (HTTP URL will be converted to WS).
             session_id: Optional session ID to bind to.
             timeout: Connection timeout in seconds.
+            stream_timeout: Maximum seconds to wait between stream frames in
+                ``prompt_stream``, or ``None`` to wait indefinitely.
             headers: Optional WebSocket handshake headers.
             api_key: Optional API key sent as a Bearer token.
         """
         self._url = url.rstrip("/")
         self._session_id = session_id
         self._timeout = timeout
+        self._stream_timeout = stream_timeout
         self._headers = dict(headers or {})
         if api_key is not None and not any(key.lower() == "authorization" for key in self._headers):
             self._headers["Authorization"] = f"Bearer {api_key}"
@@ -394,7 +398,7 @@ class WebSocketClient:
             while True:
                 data = await asyncio.wait_for(
                     queue.get(),
-                    timeout=300.0,
+                    timeout=self._stream_timeout,
                 )
 
                 msg_type = data.get("type")
@@ -453,8 +457,13 @@ class WebSocketClient:
                             metadata=payload,
                         )
 
-        except TimeoutError:
-            raise PromptError("Stream timeout", session_id=sid) from None
+        except TimeoutError as e:
+            raise StreamTimeoutError(
+                f"Stream timed out after {self._stream_timeout}s without frames; "
+                "the turn may still be running server-side",
+                session_id=sid,
+                timeout=self._stream_timeout,
+            ) from e
         finally:
             self._stream_queues.pop(msg_id, None)
             self._overflowed_streams.discard(msg_id)

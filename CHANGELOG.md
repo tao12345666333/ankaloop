@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable prompt timeouts (`stream_timeout` / `prompt_timeout`)**: `HTTPClient`,
+  `WebSocketClient`, and the `AnkaloopClient` facade now accept a `stream_timeout` for streaming
+  prompt requests, and `HTTPClient` and the facade also accept a `prompt_timeout` for
+  non-streaming ones — each is seconds, an `httpx.Timeout` for fine-grained control (e.g. an
+  unbounded `read` timeout with bounded `connect`/`write`), or `None` to wait indefinitely,
+  replacing the hardcoded 300 seconds. `stream_timeout` bounds the gap between stream frames, so
+  clients consuming turns with long-running tool calls can disable it without losing bounded
+  connect/write timeouts; `prompt_timeout` bounds the entire wait until the turn completes.
+- **Server keepalive frames on prompt streams**: when a turn produces no events for
+  `stream_keepalive_seconds` (new `ServerConfig` field, default 15s, `None` disables), the NDJSON
+  and WebSocket prompt streams emit a `{"type": "ping"}` frame. Proxies and clients with read
+  timeouts therefore no longer drop healthy streams while a long tool execution produces no
+  output, and consumers can distinguish "turn working" from "connection dead". Clients
+  dispatching on known frame types ignore `ping` frames, so this is backward compatible.
+
+### Fixed
+
+- **Prompt timeout error fidelity**: prompt timeouts now raise `StreamTimeoutError` (a
+  `PromptError` subclass with code `STREAM_TIMEOUT`) whose message names the underlying exception
+  type, and generic prompt failures fall back to the exception class name when `str()` is empty —
+  httpx timeout exceptions stringify to `""`, which previously produced an unhelpful
+  `"Stream failed: "`. The turn keeps running server-side in either case.
+
 ---
 
 ## [0.17.0] — 2026-10-13

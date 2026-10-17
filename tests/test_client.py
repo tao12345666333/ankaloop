@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from ankaloop.client import (
@@ -23,6 +24,7 @@ from ankaloop.client.exceptions import (
     PromptError,
     SessionError,
     SessionNotFoundError,
+    StreamTimeoutError,
     TimeoutError,
 )
 from ankaloop.telegram.client import TelegramClient
@@ -67,6 +69,15 @@ class TestExceptions:
         err = PromptError("failed", session_id="sess-1")
         assert err.session_id == "sess-1"
         assert err.code == "PROMPT_ERROR"
+
+    def test_stream_timeout_error(self):
+        """Test stream timeout error."""
+        err = StreamTimeoutError("timed out", session_id="sess-1", timeout=300.0)
+        assert isinstance(err, PromptError)
+        assert err.code == "STREAM_TIMEOUT"
+        assert err.session_id == "sess-1"
+        assert err.timeout == 300.0
+        assert err.details["timeout"] == 300.0
 
 
 # ============================================================================
@@ -194,6 +205,130 @@ class TestHTTPClient:
         assert custom._headers["authorization"] == "Custom credential"
 
 
+class _FakeStreamContext:
+    """Mimic the async context manager returned by httpx.AsyncClient.stream."""
+
+    def __init__(self, lines: list[str] | None = None, error: Exception | None = None):
+        self._lines = lines or []
+        self._error = error
+        self.status_code = 200
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def aiter_lines(self):
+        if self._error is not None:
+            raise self._error
+        for line in self._lines:
+            yield line
+
+
+class TestHTTPClientStreaming:
+    """Test HTTPClient prompt streaming timeouts and error fidelity."""
+
+    def test_prompt_timeout_configuration(self):
+        """stream_timeout and prompt_timeout accept seconds, httpx.Timeout, or None."""
+        client = HTTPClient("http://localhost:8080")
+        assert client._stream_timeout == 300.0
+        assert client._prompt_timeout == 300.0
+
+        unlimited = HTTPClient("http://localhost:8080", stream_timeout=None, prompt_timeout=None)
+        assert unlimited._stream_timeout is None
+        assert unlimited._prompt_timeout is None
+        assert HTTPClient._read_timeout_seconds(None) is None
+
+        custom = httpx.Timeout(connect=5.0, read=42.0, write=5.0, pool=5.0)
+        assert HTTPClient._read_timeout_seconds(custom) == 42.0
+
+    @pytest.mark.asyncio
+    async def test_stream_prompt_passes_configured_timeout(self):
+        """The streaming request uses stream_timeout instead of a hardcoded value."""
+        client = HTTPClient("http://localhost:8080", stream_timeout=None)
+        client._client = MagicMock()
+        client._client.stream.return_value = _FakeStreamContext(
+            ['{"type": "complete", "turn_id": "t1", "status": "completed"}']
+        )
+
+        chunks = [chunk async for chunk in await client.prompt("sess-1", "hi")]
+
+        assert chunks[-1].done is True
+        assert client._client.stream.call_args.kwargs["timeout"] is None
+
+    @pytest.mark.asyncio
+    async def test_stream_prompt_ignores_keepalive_ping_frames(self):
+        """Server keepalive frames are skipped without ending the stream."""
+        client = HTTPClient("http://localhost:8080")
+        client._client = MagicMock()
+        client._client.stream.return_value = _FakeStreamContext(
+            [
+                '{"type": "start", "turn_id": "t1", "session_id": "sess-1", "status": "running"}',
+                '{"type": "ping", "turn_id": "t1"}',
+                '{"type": "chunk", "turn_id": "t1", "content": "hello"}',
+                '{"type": "ping", "turn_id": "t1"}',
+                '{"type": "complete", "turn_id": "t1", "status": "completed"}',
+            ]
+        )
+
+        chunks = [chunk async for chunk in await client.prompt("sess-1", "hi")]
+
+        assert [chunk.chunk_type for chunk in chunks] == ["text", "complete"]
+        assert chunks[0].content == "hello"
+
+    @pytest.mark.asyncio
+    async def test_stream_prompt_read_timeout_raises_stream_timeout_error(self):
+        """httpx timeouts surface as StreamTimeoutError naming the exception type."""
+        client = HTTPClient("http://localhost:8080", stream_timeout=300.0)
+        client._client = MagicMock()
+        client._client.stream.return_value = _FakeStreamContext(error=httpx.ReadTimeout(""))
+
+        with pytest.raises(StreamTimeoutError) as exc_info:
+            async for _ in await client.prompt("sess-1", "hi"):
+                pass
+
+        err = exc_info.value
+        assert isinstance(err, PromptError)
+        assert "ReadTimeout" in str(err)
+        assert err.code == "STREAM_TIMEOUT"
+        assert err.session_id == "sess-1"
+        assert err.timeout == 300.0
+
+    @pytest.mark.asyncio
+    async def test_stream_prompt_error_names_exception_type_when_message_empty(self):
+        """Exceptions with an empty str() still produce an identifiable message."""
+        client = HTTPClient("http://localhost:8080")
+        client._client = MagicMock()
+        client._client.stream.return_value = _FakeStreamContext(error=httpx.ReadError(""))
+
+        with pytest.raises(PromptError, match="ReadError"):
+            async for _ in await client.prompt("sess-1", "hi"):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_non_stream_prompt_uses_prompt_timeout(self):
+        """Non-streaming prompts use prompt_timeout, not stream_timeout."""
+        client = HTTPClient("http://localhost:8080", stream_timeout=5.0, prompt_timeout=60.0)
+        client._client = MagicMock()
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"response": "done"}
+        client._client.post = AsyncMock(return_value=response)
+
+        assert await client.prompt("sess-1", "hi", stream=False) == "done"
+        assert client._client.post.call_args.kwargs["timeout"] == 60.0
+
+    @pytest.mark.asyncio
+    async def test_non_stream_prompt_timeout_raises_stream_timeout_error(self):
+        """Non-streaming prompt timeouts surface as StreamTimeoutError."""
+        client = HTTPClient("http://localhost:8080")
+        client._client = MagicMock()
+        client._client.post = AsyncMock(side_effect=httpx.ReadTimeout(""))
+
+        with pytest.raises(StreamTimeoutError, match="ReadTimeout"):
+            await client.prompt("sess-1", "hi", stream=False)
+
+
 class TestWebSocketClient:
     """Test WebSocket authentication and URL construction."""
 
@@ -275,6 +410,49 @@ class TestWebSocketClient:
         assert "request" in client._overflowed_streams
 
     @pytest.mark.asyncio
+    async def test_prompt_stream_timeout_raises_stream_timeout_error(self):
+        """An idle stream raises StreamTimeoutError naming the idle limit."""
+        client = WebSocketClient("https://example.test", session_id="session", stream_timeout=0.01)
+        client._send = AsyncMock()
+
+        with pytest.raises(StreamTimeoutError) as exc_info:
+            await anext(client.prompt_stream("hello"))
+
+        err = exc_info.value
+        assert isinstance(err, PromptError)
+        assert err.code == "STREAM_TIMEOUT"
+        assert err.session_id == "session"
+        assert err.timeout == 0.01
+        assert "0.01" in str(err)
+        assert client._stream_queues == {}
+
+    @pytest.mark.asyncio
+    async def test_prompt_stream_ignores_keepalive_ping_frames(self):
+        """Server keepalive frames do not end or corrupt the stream."""
+        client = WebSocketClient("https://example.test", session_id="session")
+        sent = []
+
+        async def capture_send(message):
+            sent.append(message)
+
+        client._send = AsyncMock(side_effect=capture_send)
+        stream = client.prompt_stream("hello")
+        chunk_task = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0)
+        msg_id = sent[0]["id"]
+
+        await client._dispatch_message({"type": "response", "id": msg_id, "payload": {"type": "ping"}})
+        await client._dispatch_message(
+            {"type": "response", "id": msg_id, "payload": {"type": "chunk", "content": "hello"}}
+        )
+        assert (await chunk_task).content == "hello"
+
+        done_task = asyncio.create_task(anext(stream))
+        await client._dispatch_message({"type": "response", "id": msg_id, "payload": {"type": "ping"}})
+        await client._dispatch_message({"type": "response", "id": msg_id, "payload": {"type": "complete"}})
+        assert (await done_task).done is True
+
+    @pytest.mark.asyncio
     async def test_amcp_client_passes_auth_to_http_client(self, monkeypatch):
         async def connect_without_network(client):
             client._client = object()
@@ -289,6 +467,22 @@ class TestWebSocketClient:
         assert isinstance(client._client, HTTPClient)
         assert client._client._headers["Authorization"] == "Bearer secret"
         assert client._client._headers["X-Custom"] == "value"
+
+    @pytest.mark.asyncio
+    async def test_client_passes_prompt_timeouts_to_http_client(self, monkeypatch):
+        async def connect_without_network(client):
+            client._client = object()
+
+        monkeypatch.setattr(HTTPClient, "connect", connect_without_network)
+        client = AnkaloopClient.remote(
+            "https://example.test",
+            stream_timeout=None,
+            prompt_timeout=12.0,
+        )
+        await client.connect()
+        assert isinstance(client._client, HTTPClient)
+        assert client._client._stream_timeout is None
+        assert client._client._prompt_timeout == 12.0
 
 
 # ============================================================================

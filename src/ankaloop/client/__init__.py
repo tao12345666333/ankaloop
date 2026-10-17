@@ -22,12 +22,15 @@ Example usage:
 
 from __future__ import annotations
 
+import httpx
+
 from .base import BaseClient, ClientMode
 from .exceptions import (
     AnkaloopClientError,
     ConnectionError,
     SessionError,
     SessionNotFoundError,
+    StreamTimeoutError,
     TimeoutError,
 )
 from .http_client import HTTPClient
@@ -50,6 +53,7 @@ __all__ = [
     "ConnectionError",
     "SessionError",
     "SessionNotFoundError",
+    "StreamTimeoutError",
     "TimeoutError",
 ]
 
@@ -81,6 +85,8 @@ class AnkaloopClient:
         url: str | None = None,
         *,
         timeout: float = 30.0,
+        stream_timeout: float | httpx.Timeout | None = 300.0,
+        prompt_timeout: float | httpx.Timeout | None = 300.0,
         retry_attempts: int = 3,
         mode: ClientMode | None = None,
         headers: dict[str, str] | None = None,
@@ -91,6 +97,12 @@ class AnkaloopClient:
         Args:
             url: Server URL for remote mode. If None, uses embedded mode.
             timeout: Default timeout in seconds.
+            stream_timeout: Timeout for streaming prompt requests: seconds, an
+                ``httpx.Timeout`` for fine-grained control, or ``None`` to
+                wait indefinitely. This bounds the gap between stream frames.
+            prompt_timeout: Timeout for non-streaming prompt requests, bounding
+                the entire wait until the turn completes. Accepts the same
+                values as ``stream_timeout``.
             retry_attempts: Number of retry attempts for failed requests.
             mode: Explicit mode selection. If None, auto-detects.
             headers: Optional custom remote request headers.
@@ -98,6 +110,8 @@ class AnkaloopClient:
         """
         self._url = url
         self._timeout = timeout
+        self._stream_timeout = stream_timeout
+        self._prompt_timeout = prompt_timeout
         self._retry_attempts = retry_attempts
         self._mode = mode or (ClientMode.REMOTE if url else ClientMode.EMBEDDED)
         self._headers = headers
@@ -172,6 +186,8 @@ class AnkaloopClient:
             self._client = HTTPClient(
                 url=self._url,
                 timeout=self._timeout,
+                stream_timeout=self._stream_timeout,
+                prompt_timeout=self._prompt_timeout,
                 retry_attempts=self._retry_attempts,
                 headers=self._headers,
                 api_key=self._api_key,
@@ -321,9 +337,13 @@ class AnkaloopClient:
         if not self._url:
             raise ConnectionError("URL is required for WebSocket")
 
+        stream_timeout = self._stream_timeout
+        if isinstance(stream_timeout, httpx.Timeout):
+            stream_timeout = stream_timeout.read
         ws_client = WebSocketClient(
             url=self._url,
             session_id=session_id,
+            stream_timeout=stream_timeout,
             headers=self._headers,
             api_key=self._api_key,
         )
