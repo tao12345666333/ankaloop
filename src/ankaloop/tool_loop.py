@@ -113,6 +113,28 @@ class ToolLoop:
             messages.append(message)
             message_delta.append(deepcopy(message))
 
+        def assistant_history_message(
+            resp: Any,
+            *,
+            tool_calls: list[dict[str, Any]] | None = None,
+        ) -> dict[str, Any]:
+            """Build the assistant message to persist in session history.
+
+            The response's reasoning trace is stored as ``reasoning_content``
+            only when the provider opted in via ``requires_reasoning_echo``:
+            providers that mandate the echo (e.g. Reflection rejects the next
+            request with HTTP 400 otherwise) get it replayed from history,
+            while everywhere else the trace is dropped instead of inflating
+            prompt tokens on every later turn.
+            """
+            message: dict[str, Any] = {"role": "assistant", "content": resp.content or ""}
+            thinking = getattr(resp, "thinking", None)
+            if reasoning_echo and thinking:
+                message["reasoning_content"] = thinking
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+            return message
+
         def completed(text: str) -> str | tuple[str, list[dict[str, Any]]]:
             if return_message_delta:
                 return text, message_delta
@@ -123,6 +145,7 @@ class ToolLoop:
         cfg = cfg or self._agent._resolve_turn_config()
         model_config = cfg.chat.model_config if cfg.chat else None
         reasoning_as_content = bool(cfg.chat and cfg.chat.reasoning_as_content)
+        reasoning_echo = bool(cfg.chat and cfg.chat.requires_reasoning_echo)
 
         def _record_step_reasoning(resp) -> None:
             """Accumulate reasoning separated from content for the turn result."""
@@ -242,10 +265,9 @@ class ToolLoop:
                     )
                     self._agent.console.print(f"[yellow]Tools {limited_tools} limited, forcing response[/yellow]")
                     append_canonical(
-                        {
-                            "role": "assistant",
-                            "content": resp.content or "",
-                            "tool_calls": [
+                        assistant_history_message(
+                            resp,
+                            tool_calls=[
                                 {
                                     "id": tc.id,
                                     "type": "function",
@@ -257,7 +279,7 @@ class ToolLoop:
                                 | ({"extra_content": tc.extra_content} if tc.extra_content else {})
                                 for tc in tool_calls
                             ],
-                        }
+                        )
                     )
                     for tc in tool_calls:
                         append_canonical(
@@ -289,6 +311,10 @@ class ToolLoop:
                         self._agent._record_llm_usage(final_resp, estimated_input_tokens, context_window)
                         _record_step_reasoning(final_resp)
                         final_text = final_resp.content or ""
+                        # Persist the forced final reply (with its reasoning
+                        # trace) so the turn ends on a committed assistant
+                        # message, like the normal completion path below.
+                        append_canonical(assistant_history_message(final_resp))
                         status.update(f"[bold]Agent {self._agent.name}[/bold] - ✅ Complete")
                         return completed(final_text)
                     except Exception as e:
@@ -298,10 +324,9 @@ class ToolLoop:
                         raise self._agent._agent_execution_error(f"Could not get final response: {e}") from e
 
                 append_canonical(
-                    {
-                        "role": "assistant",
-                        "content": resp.content or "",
-                        "tool_calls": [
+                    assistant_history_message(
+                        resp,
+                        tool_calls=[
                             {
                                 "id": tc.id,
                                 "type": "function",
@@ -313,7 +338,7 @@ class ToolLoop:
                             | ({"extra_content": tc.extra_content} if tc.extra_content else {})
                             for tc in tool_calls
                         ],
-                    }
+                    )
                 )
 
                 # Process tool calls with Live UI
@@ -605,6 +630,11 @@ class ToolLoop:
                 if stream and not used_tools:
                     # For streaming, we'll implement a simple version
                     pass
+
+                # Persist the final assistant message in the turn delta (with
+                # its reasoning trace when the provider opted into
+                # reasoning echo), so the next turn replays it from history.
+                append_canonical(assistant_history_message(resp))
 
                 status.update(f"[bold]Agent {self._agent.name}[/bold] - ✅ Complete")
                 return completed(final_text)

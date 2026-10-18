@@ -84,6 +84,11 @@ class ChatProviderConfig:
     # for gateways that reject the provider SDK's default credential header.
     auth_header: str | None = None
     reasoning_effort: str | None = None  # reasoning effort level sent with model requests
+    # Replay each assistant message's reasoning_content back to the provider on
+    # later turns. Only enable for providers that require it (e.g. Reflection
+    # rejects the request with HTTP 400 when an earlier assistant message lacks
+    # it); elsewhere the replayed reasoning is ignored and only costs tokens.
+    requires_reasoning_echo: bool | None = None
 
 
 @dataclass
@@ -109,6 +114,12 @@ class ChatConfig:
     # content stream. Off by default so reasoning travels on its own channel
     # (``message.reasoning`` events / ``reasoning_content`` turn result field).
     reasoning_as_content: bool = False
+
+    # Replay each assistant message's reasoning_content in conversation history.
+    # Off by default: providers ignore a replayed reasoning trace, so sending it
+    # only inflates prompt tokens. Enable only for providers that reject
+    # requests lacking it (e.g. Reflection); usually set per provider profile.
+    requires_reasoning_echo: bool = False
 
     # Provider reliability policy. Retries are only attempted for transient
     # failures and never after a streaming response emitted content.
@@ -445,6 +456,7 @@ def _decode_chat_provider(raw: Mapping[str, object]) -> ChatProviderConfig:
     api_key_command_ttl_seconds = raw.get("api_key_command_ttl_seconds")
     auth_header = raw.get("auth_header")
     reasoning_effort = raw.get("reasoning_effort")
+    requires_reasoning_echo = raw.get("requires_reasoning_echo")
     raw_model_config = raw.get("model_config")
     model_config = _decode_model_config(raw_model_config) if isinstance(raw_model_config, dict) else None
     raw_extra_headers = raw.get("extra_headers")
@@ -469,6 +481,7 @@ def _decode_chat_provider(raw: Mapping[str, object]) -> ChatProviderConfig:
         ),
         auth_header=str(auth_header) if auth_header is not None else None,
         reasoning_effort=str(reasoning_effort) if reasoning_effort is not None else None,
+        requires_reasoning_echo=(bool(requires_reasoning_echo) if requires_reasoning_echo is not None else None),
     )
 
 
@@ -506,6 +519,8 @@ def _apply_active_provider(chat: ChatConfig) -> ChatConfig:
         chat.extra_headers = provider.extra_headers
     if provider.reasoning_effort is not None:
         chat.reasoning_effort = provider.reasoning_effort
+    if provider.requires_reasoning_echo is not None:
+        chat.requires_reasoning_echo = provider.requires_reasoning_echo
     return chat
 
 
@@ -525,6 +540,7 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
     retry_base_delay_seconds = raw.get("retry_base_delay_seconds", 0.5)
     reasoning_effort = raw.get("reasoning_effort")
     reasoning_as_content = raw.get("reasoning_as_content", False)
+    requires_reasoning_echo = raw.get("requires_reasoning_echo", False)
     tool_loop_limit = raw.get("tool_loop_limit")
     bash_tool_limit = raw.get("bash_tool_limit")
     default_max_lines = raw.get("default_max_lines")
@@ -587,6 +603,7 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
         extra_headers=extra_headers,
         reasoning_effort=str(reasoning_effort) if reasoning_effort is not None else None,
         reasoning_as_content=bool(reasoning_as_content),
+        requires_reasoning_echo=bool(requires_reasoning_echo),
     )
     return _apply_active_provider(chat)
 
@@ -885,6 +902,8 @@ def _encode_chat_provider(p: ChatProviderConfig) -> dict:
         out["extra_headers"] = dict(p.extra_headers)
     if p.reasoning_effort:
         out["reasoning_effort"] = p.reasoning_effort
+    if p.requires_reasoning_echo is not None:
+        out["requires_reasoning_echo"] = bool(p.requires_reasoning_echo)
     return out
 
 
@@ -914,6 +933,8 @@ def _encode_chat(c: ChatConfig | None) -> dict | None:
         out["reasoning_effort"] = c.reasoning_effort
     if c.reasoning_as_content:
         out["reasoning_as_content"] = True
+    if c.requires_reasoning_echo and not provider_profiles_enabled:
+        out["requires_reasoning_echo"] = True
     # Model config
     model_config_dict = _encode_model_config(c.model_config)
     if model_config_dict and not provider_profiles_enabled:

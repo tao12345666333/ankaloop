@@ -191,6 +191,11 @@ reasoning_effort = "high"
 # frames and responses carry `reasoning_content`. Set true to restore the legacy
 # behavior of folding reasoning into the message content.
 reasoning_as_content = false
+# Replay each assistant message's reasoning_content in conversation history.
+# Off by default: providers ignore a replayed reasoning trace, so sending it only
+# inflates prompt tokens. Enable (usually per provider profile) only for providers
+# that reject requests lacking it.
+requires_reasoning_echo = false
 tool_loop_limit = 300
 bash_tool_limit = 100
 default_max_lines = 400

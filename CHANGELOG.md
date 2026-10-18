@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which are split out incrementally during streaming.
 - **`[chat] reasoning_as_content` config knob** (default `false`): set to `true` to restore the
   legacy behavior of folding reasoning into message content with no separate reasoning channel.
+- **`requires_reasoning_echo` config knob** (default `false`, settable top-level or per
+  `[chat.providers.<name>]` profile): when enabled, every assistant message committed to the
+  conversation history carries the `reasoning_content` it was returned with, so it is replayed
+  to the provider on later turns. Providers that mandate the echo (rejecting multi-turn
+  requests whose history assistant messages lack it) become usable; everywhere else the trace
+  stays dropped so it never inflates prompt tokens. The final assistant message of a turn is
+  now committed through the tool loop's message delta (same content and position as before)
+  so the echo covers it too.
 
 ---
 

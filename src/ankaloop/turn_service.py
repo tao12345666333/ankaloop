@@ -270,7 +270,16 @@ class TurnService:
                 )
 
                 turn_messages.extend(tool_messages)
-                turn_messages.append({"role": "assistant", "content": result})
+                # The tool loop commits the final assistant message (with its
+                # reasoning_content) into the delta when it completes; only
+                # add a bare one here when that didn't happen (e.g. a mocked
+                # or legacy delta ending on tool results).
+                if not (
+                    turn_messages
+                    and turn_messages[-1].get("role") == "assistant"
+                    and not turn_messages[-1].get("tool_calls")
+                ):
+                    turn_messages.append({"role": "assistant", "content": result})
                 self._agent._capture_session_state(draft)
                 draft.commit_turn(
                     turn_id,
