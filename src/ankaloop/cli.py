@@ -11,12 +11,13 @@ from typing import Annotated
 import typer
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
-from rich.console import Console
+from rich.console import Console, Group
 from rich.json import JSON
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from . import __git_commit__, __version__
 from .agent import Agent, create_agent_by_name
@@ -421,6 +422,19 @@ def attach_command(
     _attach_sync(url, session_id, work_dir, api_key)
 
 
+def _render_stream_panel(full_response: str, reasoning_text: str) -> Panel:
+    """Render the live stream panel with reasoning muted above the answer."""
+    if not reasoning_text:
+        return Panel(Markdown(full_response or "⏳ *Thinking...*"), border_style="cyan")
+    return Panel(
+        Group(
+            Text(reasoning_text, style="dim italic"),
+            Markdown(full_response) if full_response else Text("…", style="dim"),
+        ),
+        border_style="cyan",
+    )
+
+
 def _attach_sync(
     url: str,
     session_id: str | None,
@@ -616,6 +630,7 @@ def _attach_sync(
                 ):
                     response.raise_for_status()
                     full_response = ""
+                    reasoning_text = ""
 
                     with Live(
                         Panel(Markdown("⏳ *Thinking...*"), border_style="cyan"),
@@ -636,7 +651,10 @@ def _attach_sync(
                                     if data.get("type") == "chunk":
                                         chunk = data.get("content", "")
                                         full_response += chunk
-                                        live.update(Panel(Markdown(full_response), border_style="cyan"))
+                                        live.update(_render_stream_panel(full_response, reasoning_text))
+                                    elif data.get("type") == "reasoning":
+                                        reasoning_text += data.get("content", "")
+                                        live.update(_render_stream_panel(full_response, reasoning_text))
                                     elif data.get("type") == "tool_call":
                                         # Show tool call indicator
                                         tool_name = data.get("tool_name", "unknown")

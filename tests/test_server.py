@@ -294,6 +294,29 @@ class TestSessionEndpoints:
         turn_response = client.get(f"/api/v1/sessions/{session_id}/turns/{turn_id}")
         assert turn_response.json()["status"] == "completed"
 
+    def test_prompt_stream_relays_reasoning_frames(self, client):
+        """Reasoning events relay as their own frame type, distinct from chunks."""
+        create_resp = client.post("/api/v1/sessions", json={"cwd": "/tmp"})
+        session_id = create_resp.json()["id"]
+        managed = asyncio.run(get_session_manager().get_session(session_id))
+
+        async def process(_request):
+            managed.agent._emit_event("message.reasoning", {"content": "thinking"})
+            managed.agent._emit_event("message.chunk", {"content": "answer"})
+            return "answer"
+
+        managed.agent._runtime._processor = process
+        with client.stream(
+            "POST",
+            f"/api/v1/sessions/{session_id}/prompt/stream",
+            json={"content": "hello", "stream": True},
+        ) as response:
+            frames = [json.loads(line) for line in response.iter_lines() if line]
+
+        assert [frame["type"] for frame in frames] == ["start", "reasoning", "chunk", "complete"]
+        assert frames[1]["content"] == "thinking"
+        assert frames[2]["content"] == "answer"
+
     def test_prompt_stream_emits_keepalive_ping_for_idle_turn(self, client, monkeypatch):
         """Idle turns emit ping frames so consumers can tell working from dead."""
         monkeypatch.setattr(get_server_config(), "stream_keepalive_seconds", 0.05)
@@ -793,6 +816,31 @@ class TestConflictStrategy:
         data = response.json()
         assert data["status"] == "complete"
         assert data["response"] == "reject strategy response"
+
+    def test_prompt_returns_reasoning_content_next_to_response(self, client):
+        """A turn's separated reasoning surfaces as a first-class field."""
+        from ankaloop.runtime import TurnOutput
+
+        create_resp = client.post("/api/v1/sessions", json={"cwd": "/tmp"})
+        session_id = create_resp.json()["id"]
+        managed = asyncio.run(get_session_manager().get_session(session_id))
+        managed.agent._runtime._processor = AsyncMock(
+            return_value=TurnOutput(response="answer", reasoning_content="hidden trace")
+        )
+
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/prompt",
+            json={"content": "test prompt"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "complete"
+        assert data["response"] == "answer"
+        assert data["reasoning_content"] == "hidden trace"
+
+        turn_response = client.get(f"/api/v1/sessions/{session_id}/turns/{data['message_id']}")
+        assert turn_response.status_code == 200
+        assert turn_response.json()["reasoning_content"] == "hidden trace"
 
 
 class TestServeEnvVars:

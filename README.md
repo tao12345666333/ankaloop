@@ -187,6 +187,10 @@ retry_base_delay_seconds = 0.5
 # none | minimal | low | medium | high | xhigh | max (unset or "auto" = provider default).
 # Can also be set per provider profile or through ANKA_REASONING_EFFORT.
 reasoning_effort = "high"
+# Keep model reasoning on a separate channel (default): stream APIs emit `reasoning`
+# frames and responses carry `reasoning_content`. Set true to restore the legacy
+# behavior of folding reasoning into the message content.
+reasoning_as_content = false
 tool_loop_limit = 300
 bash_tool_limit = 100
 default_max_lines = 400

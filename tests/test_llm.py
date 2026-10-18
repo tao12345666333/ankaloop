@@ -417,6 +417,24 @@ class TestReasoningEffort:
         assert "reasoning" not in captured
 
 
+class TestReasoningAsContent:
+    """Tests for the reasoning_as_content legacy knob wiring."""
+
+    def test_create_llm_client_defaults_reasoning_as_content_off(self):
+        cfg = ChatConfig(model="gpt-5.5", api_key="test-key")
+
+        client = create_llm_client(cfg)
+
+        assert client.reasoning_as_content is False
+
+    def test_create_llm_client_passes_reasoning_as_content(self):
+        cfg = ChatConfig(model="gpt-5.5", api_key="test-key", reasoning_as_content=True)
+
+        client = create_llm_client(cfg)
+
+        assert client.reasoning_as_content is True
+
+
 class TestOpenAIClient:
     def test_client_creation(self):
         client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
@@ -659,8 +677,34 @@ class TestOpenAIClient:
         assert response.usage.total_tokens == 150
         assert response.usage.cached_input_tokens == 40
 
-    def test_chat_uses_reasoning_as_content_when_content_missing(self):
+    def test_chat_keeps_reasoning_out_of_content_by_default(self):
         client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
+        client.client.completion = lambda **_kwargs: SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="",
+                        reasoning=Reasoning(content="DeepSeek final answer"),
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+        response = client.chat([{"role": "user", "content": "hello"}])
+
+        assert response.content == ""
+        assert response.thinking == "DeepSeek final answer"
+
+    def test_chat_uses_reasoning_as_content_when_legacy_mode_enabled(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="gpt-5.5",
+            reasoning_as_content=True,
+        )
         client.client.completion = lambda **_kwargs: SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -701,7 +745,7 @@ class TestOpenAIClient:
         assert response.content == "Visible answer"
         assert response.thinking == "Hidden reasoning"
 
-    def test_streaming_chat_uses_reasoning_as_content_when_content_missing(self):
+    def test_streaming_chat_separates_reasoning_by_default(self):
         client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
         client.client.completion = lambda **_kwargs: iter(
             [
@@ -734,15 +778,139 @@ class TestOpenAIClient:
             ]
         )
         streamed_chunks = []
+        reasoning_chunks = []
+
+        response = client.chat(
+            [{"role": "user", "content": "hello"}],
+            stream_callback=streamed_chunks.append,
+            reasoning_callback=reasoning_chunks.append,
+        )
+
+        # Reasoning streams on its own channel, never folded into content.
+        assert streamed_chunks == []
+        assert reasoning_chunks == ["Deep", "Seek"]
+        assert response.content is None
+        assert response.thinking == "DeepSeek"
+
+    def test_streaming_chat_uses_reasoning_as_content_when_legacy_mode_enabled(self):
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="gpt-5.5",
+            reasoning_as_content=True,
+        )
+        client.client.completion = lambda **_kwargs: iter(
+            [
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=None,
+                                reasoning=Reasoning(content="Deep"),
+                                tool_calls=None,
+                            ),
+                            finish_reason=None,
+                        )
+                    ],
+                    usage=None,
+                ),
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=None,
+                                reasoning=Reasoning(content="Seek"),
+                                tool_calls=None,
+                            ),
+                            finish_reason="stop",
+                        )
+                    ],
+                    usage=None,
+                ),
+            ]
+        )
+        streamed_chunks = []
+        reasoning_chunks = []
+
+        response = client.chat(
+            [{"role": "user", "content": "hello"}],
+            stream_callback=streamed_chunks.append,
+            reasoning_callback=reasoning_chunks.append,
+        )
+
+        # Legacy mode: reasoning flushes into the content stream, never to the
+        # reasoning callback.
+        assert streamed_chunks == ["DeepSeek"]
+        assert reasoning_chunks == []
+        assert response.content == "DeepSeek"
+        assert response.thinking is None
+
+    def test_streaming_chat_routes_think_tags_to_reasoning_callback(self):
+        """<think> tags embedded in content stream to reasoning, not content."""
+        client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
+
+        def delta_chunk(content):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content=content, reasoning=None, tool_calls=None),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            )
+
+        # Tag fragments straddle chunk boundaries on purpose.
+        client.client.completion = lambda **_kwargs: iter(
+            [
+                delta_chunk("<th"),
+                delta_chunk("ink>plan"),
+                delta_chunk("ning</thi"),
+                delta_chunk("nk>Answer"),
+            ]
+        )
+        streamed_chunks = []
+        reasoning_chunks = []
+
+        response = client.chat(
+            [{"role": "user", "content": "hello"}],
+            stream_callback=streamed_chunks.append,
+            reasoning_callback=reasoning_chunks.append,
+        )
+
+        assert streamed_chunks == ["Answer"]
+        assert reasoning_chunks == ["plan", "ning"]
+        assert response.content == "Answer"
+        assert response.thinking == "planning"
+
+    def test_streaming_chat_without_reasoning_callback_passes_content_through(self):
+        """Callers without a reasoning channel keep the legacy raw stream."""
+        client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
+
+        def delta_chunk(content):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content=content, reasoning=None, tool_calls=None),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            )
+
+        client.client.completion = lambda **_kwargs: iter(
+            [delta_chunk("<think>"), delta_chunk("plan"), delta_chunk("</think>"), delta_chunk("Answer")]
+        )
+        streamed_chunks = []
 
         response = client.chat(
             [{"role": "user", "content": "hello"}],
             stream_callback=streamed_chunks.append,
         )
 
-        assert streamed_chunks == ["DeepSeek"]
-        assert response.content == "DeepSeek"
-        assert response.thinking is None
+        assert streamed_chunks == ["<think>", "plan", "</think>", "Answer"]
+        assert response.content == "Answer"
+        assert response.thinking == "plan"
 
     def test_chat_raises_clear_error_when_choices_missing(self):
         client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
@@ -882,6 +1050,56 @@ class TestOpenAIResponsesClient:
         assert captured["temperature"] == 0.2
         assert captured["stream"] is True
         assert captured["allow_running_loop"] is True
+
+    def test_parse_response_extracts_reasoning_as_thinking(self):
+        client = OpenAIResponsesClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
+        completed = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    summary=[SimpleNamespace(type="summary_text", text="weighing options")],
+                    content=None,
+                ),
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="answer")],
+                ),
+            ],
+            status="completed",
+            usage=None,
+        )
+        client.client = SimpleNamespace(responses=lambda **_kwargs: completed)
+
+        response = client.chat([{"role": "user", "content": "hello"}])
+
+        assert response.content == "answer"
+        assert response.thinking == "weighing options"
+
+    def test_streaming_routes_reasoning_summary_deltas(self):
+        client = OpenAIResponsesClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
+        completed = SimpleNamespace(output=[], status="completed", usage=None)
+
+        def responses(**_kwargs):
+            return iter(
+                [
+                    SimpleNamespace(type="response.reasoning_summary_text.delta", delta="thinking..."),
+                    SimpleNamespace(type="response.output_text.delta", delta="done"),
+                    SimpleNamespace(type="response.completed", response=completed),
+                ]
+            )
+
+        client.client = SimpleNamespace(responses=responses)
+        chunks = []
+        reasoning_chunks = []
+
+        client.chat(
+            [{"role": "user", "content": "hello"}],
+            stream_callback=chunks.append,
+            reasoning_callback=reasoning_chunks.append,
+        )
+
+        assert chunks == ["done"]
+        assert reasoning_chunks == ["thinking..."]
 
     @staticmethod
     def _responses_client_with_limit(output_limit: int) -> OpenAIResponsesClient:

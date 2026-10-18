@@ -104,6 +104,12 @@ class ChatConfig:
     # provider default; otherwise forwarded to every model request.
     reasoning_effort: str | None = None
 
+    # Legacy compatibility: fold reasoning traces into the assistant content when
+    # a step produces no visible content, and flush reasoning-only steps into the
+    # content stream. Off by default so reasoning travels on its own channel
+    # (``message.reasoning`` events / ``reasoning_content`` turn result field).
+    reasoning_as_content: bool = False
+
     # Provider reliability policy. Retries are only attempted for transient
     # failures and never after a streaming response emitted content.
     request_timeout_seconds: float = 120.0
@@ -518,6 +524,7 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
     max_retries = raw.get("max_retries", 2)
     retry_base_delay_seconds = raw.get("retry_base_delay_seconds", 0.5)
     reasoning_effort = raw.get("reasoning_effort")
+    reasoning_as_content = raw.get("reasoning_as_content", False)
     tool_loop_limit = raw.get("tool_loop_limit")
     bash_tool_limit = raw.get("bash_tool_limit")
     default_max_lines = raw.get("default_max_lines")
@@ -579,6 +586,7 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
         max_queue_size=int(str(max_queue_size)) if max_queue_size is not None else None,
         extra_headers=extra_headers,
         reasoning_effort=str(reasoning_effort) if reasoning_effort is not None else None,
+        reasoning_as_content=bool(reasoning_as_content),
     )
     return _apply_active_provider(chat)
 
@@ -904,6 +912,8 @@ def _encode_chat(c: ChatConfig | None) -> dict | None:
     out["retry_base_delay_seconds"] = float(c.retry_base_delay_seconds)
     if c.reasoning_effort and not provider_profiles_enabled:
         out["reasoning_effort"] = c.reasoning_effort
+    if c.reasoning_as_content:
+        out["reasoning_as_content"] = True
     # Model config
     model_config_dict = _encode_model_config(c.model_config)
     if model_config_dict and not provider_profiles_enabled:

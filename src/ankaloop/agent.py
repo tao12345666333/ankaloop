@@ -47,6 +47,7 @@ from .runtime import (
     RuntimeClosedError,
     SessionRuntime,
     TurnHandle,
+    TurnOutput,
     TurnRequest,
 )
 from .session_search import get_transcript_store  # noqa: F401 - legacy patch seam
@@ -233,6 +234,9 @@ class Agent:
         # Per-request tracking (reset on each new request)
         self.current_request_tool_calls: int = 0  # Tools called in current request
         self.current_request_llm_calls: int = 0  # LLM calls in current request
+        # Reasoning traces separated from content during the active turn (reset
+        # per request; consumed into the turn result's reasoning_content).
+        self.current_turn_reasoning_parts: list[str] = []
 
         # Session-level cumulative tracking
         self.total_llm_calls: int = 0  # Total LLM calls across entire session
@@ -501,7 +505,7 @@ class Agent:
             **data,
         }
         mirror_event(event_type, data)
-        if event_type == "message.chunk" or event_type.startswith("tool.call_"):
+        if event_type in {"message.chunk", "message.reasoning"} or event_type.startswith("tool.call_"):
             active_turn = self._runtime.active_turn
             if active_turn is not None:
                 event_data["turn_id"] = active_turn.id
@@ -801,7 +805,7 @@ class Agent:
                 priority=priority,
             )
 
-    async def _process_turn_request(self, request: TurnRequest) -> str:
+    async def _process_turn_request(self, request: TurnRequest) -> TurnOutput:
         self.execution_context["turn_id"] = request.id
         handle = self._runtime.active_turn
         span_attributes: dict[str, Any] = {
@@ -834,12 +838,17 @@ class Agent:
             else:
                 self.execution_context["trace_id"] = trace_id
             try:
-                return await self._process_message(
+                response = await self._process_message(
                     request.prompt,
                     request.work_dir,
                     request.stream,
                     request.show_progress,
                 )
+                # Consume the reasoning accumulated during this turn into the
+                # turn result; empty when reasoning folded into the response.
+                reasoning = "".join(self.current_turn_reasoning_parts) or None
+                self.current_turn_reasoning_parts = []
+                return TurnOutput(response=response, reasoning_content=reasoning)
             finally:
                 set_attributes(
                     span,
@@ -1341,6 +1350,7 @@ class Agent:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         stream_callback: Any | None = None,
+        reasoning_callback: Any | None = None,
         cfg: ChatConfig | None = None,
     ) -> Any:
         """Call a provider with timeout and bounded transient-error retries."""
@@ -1365,12 +1375,14 @@ class Agent:
                     messages=messages,
                     tools=tools,
                     stream_callback=callback,
+                    reasoning_callback=reasoning_callback,
                 )
             return await asyncio.to_thread(
                 llm_client.chat,
                 messages=messages,
                 tools=tools,
                 stream_callback=callback,
+                reasoning_callback=reasoning_callback,
             )
 
         # One ``chat`` span per logical call; retries are events on it.

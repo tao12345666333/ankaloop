@@ -10,6 +10,7 @@ from ankaloop.runtime import (
     SessionRuntime,
     SessionRuntimeStatus,
     TurnCancelledError,
+    TurnOutput,
     TurnStatus,
 )
 from ankaloop.server.turn_stream import turn_frames
@@ -204,6 +205,55 @@ async def test_terminal_handle_retention_is_bounded():
     assert runtime.get_turn(handles[2].id) is None
     assert runtime.get_turn(handles[3].id) is handles[3]
     assert runtime.get_turn(handles[4].id) is handles[4]
+
+
+@pytest.mark.asyncio
+async def test_turn_output_carries_reasoning_content_into_turn_result():
+    async def process(request):
+        return TurnOutput(response="answer", reasoning_content="hidden trace")
+
+    runtime = SessionRuntime("reasoning", process)
+    handle = await runtime.submit("prompt")
+
+    assert await handle.wait() == "answer"
+    outcome = handle.outcome
+    assert outcome is not None
+    assert outcome.value == "answer"
+    assert outcome.reasoning_content == "hidden trace"
+
+
+@pytest.mark.asyncio
+async def test_turn_frames_relays_reasoning_events_on_their_own_frame_type():
+    async def process(request):
+        runtime.publish_turn_event(request.id, "message.reasoning", {"content": "thinking"})
+        runtime.publish_turn_event(request.id, "message.chunk", {"content": "answer"})
+        return TurnOutput(response="answer", reasoning_content="thinking")
+
+    runtime = SessionRuntime("frames", process)
+    handle = await runtime.submit("prompt")
+
+    frames = [frame async for frame in turn_frames(handle, "frames")]
+
+    assert [frame["type"] for frame in frames] == ["start", "reasoning", "chunk", "complete"]
+    assert frames[1]["content"] == "thinking"
+    assert frames[2]["content"] == "answer"
+    assert await handle.wait() == "answer"
+
+
+@pytest.mark.asyncio
+async def test_turn_frames_emits_full_reasoning_once_for_non_streamed_turn():
+    async def process(request):
+        return TurnOutput(response="answer", reasoning_content="full trace")
+
+    runtime = SessionRuntime("late", process)
+    handle = await runtime.submit("prompt")
+    assert await handle.wait() == "answer"
+
+    frames = [frame async for frame in turn_frames(handle, "late")]
+
+    assert [frame["type"] for frame in frames] == ["start", "reasoning", "chunk", "complete"]
+    assert frames[1]["content"] == "full trace"
+    assert frames[2]["content"] == "answer"
 
 
 @pytest.mark.asyncio

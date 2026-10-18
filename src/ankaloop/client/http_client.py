@@ -419,6 +419,13 @@ class HTTPClient(BaseClient):
                                 done=False,
                                 metadata=data,
                             )
+                        elif chunk_type == "reasoning":
+                            yield ResponseChunk(
+                                content=data.get("content", ""),
+                                chunk_type="reasoning",
+                                done=False,
+                                metadata=data,
+                            )
                         elif chunk_type == "tool":
                             tool_event = data.get("event", "")
                             yield ResponseChunk(

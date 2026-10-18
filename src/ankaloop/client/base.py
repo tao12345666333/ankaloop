@@ -33,7 +33,7 @@ class ResponseChunk:
 
         Args:
             content: The text content of the chunk.
-            chunk_type: Type of chunk (text, tool_call, tool_result, error).
+            chunk_type: Type of chunk (text, reasoning, tool_call, tool_result, error).
             done: Whether this is the final chunk.
             metadata: Optional metadata for the chunk.
         """

@@ -148,6 +148,7 @@ class PromptResponse(BaseModel):
     status: str  # "streaming" | "queued" | "complete" | "error"
     position: int | None = None  # Position in queue if queued
     response: str | None = None
+    reasoning_content: str | None = None  # Reasoning trace when exposed separately
     command: str | None = None
     new_session_id: str | None = None
     trace_id: str | None = None  # Hex trace id of the turn when tracing is enabled

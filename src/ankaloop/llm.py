@@ -188,6 +188,55 @@ def _extract_think_tags(content: str) -> tuple[str | None, str]:
     return None, content
 
 
+class _ThinkTagStreamSplitter:
+    """Incrementally split streamed content into visible text and <think> reasoning.
+
+    Providers that embed reasoning as ``<think>`` tags inside the content stream
+    need tag-aware routing: visible text goes to the content callback and the
+    tag bodies go to the reasoning callback. Tag fragments may straddle chunk
+    boundaries, so a trailing partial tag is held back until it resolves.
+    """
+
+    _OPEN = "<think>"
+    _CLOSE = "</think>"
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._in_think = False
+
+    def feed(self, delta: str) -> tuple[str, str]:
+        """Consume one chunk and return the (content, reasoning) safe to emit."""
+        self._buf += delta
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        while self._buf:
+            tag = self._CLOSE if self._in_think else self._OPEN
+            index = self._buf.find(tag)
+            if index == -1:
+                hold = self._partial_tag_suffix(self._buf, tag)
+                emit = self._buf[: len(self._buf) - hold]
+                self._buf = self._buf[len(self._buf) - hold :]
+                (reasoning_parts if self._in_think else content_parts).append(emit)
+                break
+            (reasoning_parts if self._in_think else content_parts).append(self._buf[:index])
+            self._buf = self._buf[index + len(tag) :]
+            self._in_think = not self._in_think
+        return "".join(content_parts), "".join(reasoning_parts)
+
+    def flush(self) -> tuple[str, str]:
+        """Emit whatever remains once the stream ends."""
+        buf, self._buf = self._buf, ""
+        return ("", buf) if self._in_think else (buf, "")
+
+    @staticmethod
+    def _partial_tag_suffix(text: str, tag: str) -> int:
+        """Length of the longest text suffix that could still grow into tag."""
+        for size in range(min(len(text), len(tag) - 1), 0, -1):
+            if text.endswith(tag[:size]):
+                return size
+        return 0
+
+
 def _response_field(value: Any, name: str, default: Any = None) -> Any:
     """Read a field from SDK objects or dictionaries."""
     if isinstance(value, dict):
@@ -364,6 +413,7 @@ class BaseLLMClient(ABC):
     # providers with native timeout support (see _nonstreaming_request_timeout).
     _request_timeout: float | None
     reasoning_effort: str | None = None  # class-level default; __init__ normalizes configured values
+    reasoning_as_content: bool = False  # class-level default; __init__ stores configured value
 
     def _configure_request_limits(
         self,
@@ -521,6 +571,48 @@ async def _aclose_anyllm_provider(provider: Any) -> None:
         return
 
 
+class _StreamRouter:
+    """Route streamed deltas to the content and reasoning callbacks.
+
+    When a reasoning callback is present, ``<think>`` tags embedded in the
+    content stream are split out and routed to it, so the content callback only
+    ever receives user-visible text. Without a reasoning callback the legacy
+    behavior is preserved: content deltas pass through unchanged.
+    """
+
+    def __init__(self, content_callback: Any, reasoning_callback: Any | None = None) -> None:
+        self._content_callback = content_callback
+        # ``Any`` (not ``Any | None``) so calls under the splitter guard type-check.
+        self._reasoning_callback: Any = reasoning_callback
+        self._splitter = _ThinkTagStreamSplitter() if reasoning_callback is not None else None
+
+    def content(self, delta: str) -> None:
+        """Route one provider content delta."""
+        if self._splitter is None:
+            self._content_callback(delta)
+            return
+        visible, thought = self._splitter.feed(delta)
+        if visible:
+            self._content_callback(visible)
+        if thought:
+            self._reasoning_callback(thought)
+
+    def reasoning(self, delta: str) -> None:
+        """Route one provider reasoning delta (no-op when unsupported)."""
+        if self._reasoning_callback is not None:
+            self._reasoning_callback(delta)
+
+    def flush(self) -> None:
+        """Emit text held back for partial-tag resolution at end of stream."""
+        if self._splitter is None:
+            return
+        visible, thought = self._splitter.flush()
+        if visible:
+            self._content_callback(visible)
+        if thought:
+            self._reasoning_callback(thought)
+
+
 class AnyLLMClient(BaseLLMClient):
     """Completion client for any provider supported by any-llm."""
 
@@ -534,6 +626,7 @@ class AnyLLMClient(BaseLLMClient):
         extra_headers: dict[str, str] | None = None,
         request_timeout: float | None = None,
         reasoning_effort: str | None = None,
+        reasoning_as_content: bool = False,
     ):
         from any_llm import AnyLLM
 
@@ -550,6 +643,9 @@ class AnyLLMClient(BaseLLMClient):
         self.model = model
         self._request_timeout = request_timeout
         self.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+        # Legacy mode: fold reasoning into content when a step has no visible
+        # content and flush reasoning-only steps into the content stream.
+        self.reasoning_as_content = reasoning_as_content
         self._configure_request_limits(model_config=model_config, provider_id=provider)
 
     async def aclose(self) -> None:
@@ -561,6 +657,7 @@ class AnyLLMClient(BaseLLMClient):
         messages: list[dict],
         tools: list[dict] | None = None,
         stream_callback: Any | None = None,
+        reasoning_callback: Any | None = None,
         **kwargs,
     ) -> LLMResponse:
         model = kwargs.pop("model", self.model)
@@ -598,7 +695,9 @@ class AnyLLMClient(BaseLLMClient):
 
         if stream:
             assert callback is not None
-            # Streaming mode
+            # Streaming mode. In legacy mode (reasoning_as_content) the reasoning
+            # callback is unused and reasoning folds into the content stream.
+            router = _StreamRouter(callback, None if self.reasoning_as_content else reasoning_callback)
             accumulated_content = []
             accumulated_reasoning = []
             tool_calls_chunks: dict[int, dict[str, Any]] = {}  # index -> accumulated chunk
@@ -621,12 +720,13 @@ class AnyLLMClient(BaseLLMClient):
                 # Handle content
                 delta_content = _response_field(delta, "content")
                 if delta_content:
-                    callback(delta_content)
+                    router.content(delta_content)
                     accumulated_content.append(delta_content)
 
                 # Handle thinking (if present in specific fields)
                 delta_reasoning = _reasoning_content(delta)
                 if delta_reasoning:
+                    router.reasoning(delta_reasoning)
                     accumulated_reasoning.append(delta_reasoning)
 
                 # Handle tool calls (accumulate them)
@@ -652,6 +752,8 @@ class AnyLLMClient(BaseLLMClient):
                         if extra_content is not None:
                             tool_calls_chunks[idx]["extra_content"] = extra_content
 
+            router.flush()
+
             # Reconstruct full response
             content = "".join(accumulated_content) if accumulated_content else None
             reasoning_text = "".join(accumulated_reasoning) if accumulated_reasoning else None
@@ -665,13 +767,13 @@ class AnyLLMClient(BaseLLMClient):
                         tool_call["extra_content"] = tc["extra_content"]
                     tool_calls.append(tool_call)
 
-            if reasoning_text and not content and not tool_calls:
+            if self.reasoning_as_content and reasoning_text and not content and not tool_calls:
                 callback(reasoning_text)
 
             thinking, content = _split_response_content(
                 content,
                 reasoning_text,
-                allow_reasoning_as_content=not tool_calls,
+                allow_reasoning_as_content=self.reasoning_as_content and not tool_calls,
             )
 
             return LLMResponse(
@@ -708,7 +810,7 @@ class AnyLLMClient(BaseLLMClient):
             thinking, content = _split_response_content(
                 _response_field(msg, "content"),
                 _reasoning_content(msg),
-                allow_reasoning_as_content=tool_calls is None,
+                allow_reasoning_as_content=self.reasoning_as_content and tool_calls is None,
             )
 
             return LLMResponse(
@@ -724,6 +826,7 @@ class AnyLLMClient(BaseLLMClient):
         messages: list[dict],
         tools: list[dict] | None = None,
         stream_callback: Any | None = None,
+        reasoning_callback: Any | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Send a cancellable asynchronous completion request."""
@@ -784,7 +887,7 @@ class AnyLLMClient(BaseLLMClient):
             thinking, content = _split_response_content(
                 _response_field(message, "content"),
                 _reasoning_content(message),
-                allow_reasoning_as_content=tool_calls is None,
+                allow_reasoning_as_content=self.reasoning_as_content and tool_calls is None,
             )
             return LLMResponse(
                 content=content,
@@ -794,6 +897,7 @@ class AnyLLMClient(BaseLLMClient):
                 usage=_openai_chat_usage(_response_field(response, "usage")),
             )
 
+        router = _StreamRouter(stream_callback, None if self.reasoning_as_content else reasoning_callback)
         accumulated_content: list[str] = []
         accumulated_reasoning: list[str] = []
         tool_call_chunks: dict[int, dict[str, Any]] = {}
@@ -811,10 +915,11 @@ class AnyLLMClient(BaseLLMClient):
             finish_reason = _response_field(choices[0], "finish_reason")
             content = _response_field(delta, "content")
             if content:
-                stream_callback(content)
+                router.content(content)
                 accumulated_content.append(content)
             reasoning = _reasoning_content(delta)
             if reasoning:
+                router.reasoning(reasoning)
                 accumulated_reasoning.append(reasoning)
             for call in _response_field(delta, "tool_calls", []) or []:
                 index = _response_field(call, "index", 0)
@@ -831,18 +936,20 @@ class AnyLLMClient(BaseLLMClient):
                 if extra is not None:
                     current["extra_content"] = extra
 
+        router.flush()
+
         content_text = "".join(accumulated_content) or None
         reasoning_text = "".join(accumulated_reasoning) or None
         tool_calls = [
             ({k: v for k, v in chunk.items() if k != "extra_content" or v})
             for chunk in (tool_call_chunks[index] for index in sorted(tool_call_chunks))
         ] or None
-        if reasoning_text and not content_text and not tool_calls:
+        if self.reasoning_as_content and reasoning_text and not content_text and not tool_calls:
             stream_callback(reasoning_text)
         thinking, content_text = _split_response_content(
             content_text,
             reasoning_text,
-            allow_reasoning_as_content=tool_calls is None,
+            allow_reasoning_as_content=self.reasoning_as_content and tool_calls is None,
         )
         return LLMResponse(
             content=content_text,
@@ -865,9 +972,18 @@ class OpenAIClient(AnyLLMClient):
         extra_headers: dict[str, str] | None = None,
         request_timeout: float | None = None,
         reasoning_effort: str | None = None,
+        reasoning_as_content: bool = False,
     ):
         super().__init__(
-            "openai", base_url, api_key, model, model_config, extra_headers, request_timeout, reasoning_effort
+            "openai",
+            base_url,
+            api_key,
+            model,
+            model_config,
+            extra_headers,
+            request_timeout,
+            reasoning_effort,
+            reasoning_as_content,
         )
 
 
@@ -883,9 +999,18 @@ class AnthropicClient(AnyLLMClient):
         extra_headers: dict[str, str] | None = None,
         request_timeout: float | None = None,
         reasoning_effort: str | None = None,
+        reasoning_as_content: bool = False,
     ):
         super().__init__(
-            "anthropic", base_url, api_key, model, model_config, extra_headers, request_timeout, reasoning_effort
+            "anthropic",
+            base_url,
+            api_key,
+            model,
+            model_config,
+            extra_headers,
+            request_timeout,
+            reasoning_effort,
+            reasoning_as_content,
         )
 
 
@@ -901,6 +1026,7 @@ class OpenAIResponsesClient(BaseLLMClient):
         extra_headers: dict[str, str] | None = None,
         request_timeout: float | None = None,
         reasoning_effort: str | None = None,
+        reasoning_as_content: bool = False,
     ):
         from any_llm import AnyLLM
 
@@ -916,6 +1042,9 @@ class OpenAIResponsesClient(BaseLLMClient):
         self.model = model
         self._request_timeout = request_timeout
         self.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+        # Stored for interface uniformity; this client never folded reasoning
+        # into content, so there is no legacy behavior to preserve here.
+        self.reasoning_as_content = reasoning_as_content
         self._configure_request_limits(model_config=model_config, provider_id="openai")
 
     async def aclose(self) -> None:
@@ -927,6 +1056,7 @@ class OpenAIResponsesClient(BaseLLMClient):
         messages: list[Message],
         tools: list[Message] | None = None,
         stream_callback: Any | None = None,
+        reasoning_callback: Any | None = None,
         **kwargs,
     ) -> LLMResponse:
         # Convert tools to Responses API format
@@ -977,6 +1107,10 @@ class OpenAIResponsesClient(BaseLLMClient):
                     delta = _response_field(event, "delta")
                     if delta:
                         stream_callback(delta)
+                elif event_type in {"response.reasoning_summary_text.delta", "response.reasoning_text.delta"}:
+                    delta = _response_field(event, "delta")
+                    if delta and reasoning_callback is not None:
+                        reasoning_callback(delta)
                 elif event_type == "response.completed":
                     completed_response = _response_field(event, "response")
             if completed_response is None:
@@ -991,6 +1125,7 @@ class OpenAIResponsesClient(BaseLLMClient):
         messages: list[Message],
         tools: list[Message] | None = None,
         stream_callback: Any | None = None,
+        reasoning_callback: Any | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Send a cancellable asynchronous Responses API request."""
@@ -1040,6 +1175,10 @@ class OpenAIResponsesClient(BaseLLMClient):
                 delta = _response_field(event, "delta")
                 if delta:
                     stream_callback(delta)
+            elif event_type in {"response.reasoning_summary_text.delta", "response.reasoning_text.delta"}:
+                delta = _response_field(event, "delta")
+                if delta and reasoning_callback is not None:
+                    reasoning_callback(delta)
             elif event_type == "response.completed":
                 completed_response = _response_field(event, "response")
         if completed_response is None:
@@ -1087,6 +1226,7 @@ class OpenAIResponsesClient(BaseLLMClient):
 
         # Parse response
         content_parts = []
+        reasoning_parts = []
         tool_calls = []
 
         for item in _response_field(resp, "output", []):
@@ -1094,6 +1234,13 @@ class OpenAIResponsesClient(BaseLLMClient):
                 for block in _response_field(item, "content", []):
                     if _response_field(block, "type") == "output_text":
                         content_parts.append(_response_field(block, "text", ""))
+            elif _response_field(item, "type") == "reasoning":
+                for block in _response_field(item, "summary", []) or []:
+                    if _response_field(block, "type") == "summary_text":
+                        reasoning_parts.append(_response_field(block, "text", ""))
+                for block in _response_field(item, "content", []) or []:
+                    if _response_field(block, "type") == "reasoning_text":
+                        reasoning_parts.append(_response_field(block, "text", ""))
             elif _response_field(item, "type") == "function_call":
                 tool_calls.append(
                     {
@@ -1103,10 +1250,12 @@ class OpenAIResponsesClient(BaseLLMClient):
                     }
                 )
 
+        reasoning_text = "\n".join(part for part in reasoning_parts if part)
         return LLMResponse(
             content="\n".join(content_parts) if content_parts else None,
             tool_calls=tool_calls if tool_calls else None,
             stop_reason=_response_field(resp, "stop_reason") or _response_field(resp, "status"),
+            thinking=reasoning_text or None,
             usage=_responses_usage(_response_field(resp, "usage")),
         )
 
@@ -1183,6 +1332,7 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
     auth_header = cfg.auth_header if cfg else None
     request_timeout = cfg.request_timeout_seconds if cfg else None
     reasoning_effort = (cfg.reasoning_effort if cfg else None) or os.environ.get("ANKA_REASONING_EFFORT")
+    reasoning_as_content = bool(cfg.reasoning_as_content) if cfg else False
 
     if api_type == "openai_responses":
         responses_base_url = (cfg.base_url if cfg else None) or os.environ.get(
@@ -1203,6 +1353,7 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
             ),
             request_timeout=request_timeout,
             reasoning_effort=reasoning_effort,
+            reasoning_as_content=reasoning_as_content,
         )
 
     base_url: str | None = cfg.base_url if cfg else None
@@ -1230,6 +1381,7 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
             ),
             request_timeout=request_timeout,
             reasoning_effort=reasoning_effort,
+            reasoning_as_content=reasoning_as_content,
         )
     if api_type == "anthropic":
         return AnthropicClient(
@@ -1246,6 +1398,7 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
             ),
             request_timeout=request_timeout,
             reasoning_effort=reasoning_effort,
+            reasoning_as_content=reasoning_as_content,
         )
     return AnyLLMClient(
         provider=api_type,
@@ -1262,4 +1415,5 @@ def create_llm_client(cfg: ChatConfig | None) -> BaseLLMClient:
         ),
         request_timeout=request_timeout,
         reasoning_effort=reasoning_effort,
+        reasoning_as_content=reasoning_as_content,
     )

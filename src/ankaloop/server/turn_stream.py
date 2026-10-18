@@ -35,6 +35,8 @@ def _event_frame(event: TurnEvent, handle: TurnHandle) -> dict[str, Any] | None:
     base = {"turn_id": event.turn_id}
     if event.type == "message.chunk":
         return {"type": "chunk", **base, "content": event.data.get("content", "")}
+    if event.type == "message.reasoning":
+        return {"type": "reasoning", **base, "content": event.data.get("content", "")}
     if event.type.startswith("tool.call_"):
         return {
             "type": "tool",
@@ -88,6 +90,7 @@ async def turn_frames(
     """
     queue = handle.subscribe()
     sent_chunk = False
+    sent_reasoning = False
     try:
         yield {
             "type": "start",
@@ -98,6 +101,8 @@ async def turn_frames(
         while True:
             if handle.done and queue.empty():
                 outcome = handle.outcome
+                if outcome is not None and not sent_reasoning and outcome.reasoning_content:
+                    yield {"type": "reasoning", "turn_id": handle.id, "content": outcome.reasoning_content}
                 if outcome is not None and outcome.value:
                     yield {"type": "chunk", "turn_id": handle.id, "content": outcome.value}
                 if handle.status == TurnStatus.CANCELLED:
@@ -117,12 +122,16 @@ async def turn_frames(
             frame = _event_frame(event, handle)
             if frame is None:
                 continue
-            if frame["type"] == "complete" and not sent_chunk:
+            if frame["type"] == "complete":
                 outcome = handle.outcome
-                if outcome is not None and outcome.value:
+                if not sent_reasoning and outcome is not None and outcome.reasoning_content:
+                    yield {"type": "reasoning", "turn_id": handle.id, "content": outcome.reasoning_content}
+                if not sent_chunk and outcome is not None and outcome.value:
                     yield {"type": "chunk", "turn_id": handle.id, "content": outcome.value}
             if frame["type"] == "chunk":
                 sent_chunk = True
+            elif frame["type"] == "reasoning":
+                sent_reasoning = True
             yield frame
             if frame["type"] in {"complete", "error"}:
                 return

@@ -40,6 +40,7 @@ All protocols use a unified event model defined in `ankaloop.server.models.Event
 | `session.deleted` | DELETE /sessions/{id} | ✓ | ✓ |
 | `message.chunk` | (streaming response) | ✓ | ✓ |
 | `message.complete` | (response end) | ✓ | ✓ |
+| `agent.thinking` | - | ✓ (carries model reasoning traces) | ✓ |
 | `tool.call_start` | - | ✓ | ✓ |
 | `tool.call_complete` | - | ✓ | ✓ |
 

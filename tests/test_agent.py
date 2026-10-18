@@ -1289,6 +1289,69 @@ class TestAgentEventCallbacks:
             agent._emit_event("test.event", {})
 
 
+class TestAgentReasoningChannel:
+    """Reasoning streams on message.reasoning and accumulates for the turn."""
+
+    @pytest.mark.asyncio
+    async def test_reasoning_events_and_accumulation_when_streaming(self, tmp_path):
+        class FakeLLM:
+            async def achat(self, messages=None, tools=None, stream_callback=None, reasoning_callback=None, **_kw):
+                assert reasoning_callback is not None
+                reasoning_callback("tra")
+                reasoning_callback("ce")
+                if stream_callback is not None:
+                    stream_callback("answer")
+                return SimpleNamespace(content="answer", tool_calls=None, thinking="trace", usage=None)
+
+        with patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"):
+            agent = Agent(session_id="reasoning-stream")
+        events = []
+        agent.add_event_callback(lambda event_type, data: events.append(event_type))
+
+        result = await agent._enhanced_chat_with_tools(
+            llm_client=FakeLLM(),
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[],
+            tool_registry={},
+            stream=True,
+            status=MagicMock(),
+            work_dir=tmp_path,
+            cfg=AnkaloopConfig(servers={}, chat=ChatConfig(), context=ContextConfig()),
+        )
+
+        assert result == "answer"
+        assert events.count("message.reasoning") == 2
+        assert events.count("message.chunk") == 1
+        assert agent.current_turn_reasoning_parts == ["trace"]
+
+    @pytest.mark.asyncio
+    async def test_reasoning_not_accumulated_in_legacy_mode(self, tmp_path):
+        class FakeLLM:
+            async def achat(self, **_kw):
+                return SimpleNamespace(content="trace", tool_calls=None, thinking=None, usage=None)
+
+        with patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"):
+            agent = Agent(session_id="reasoning-legacy")
+
+        result = await agent._enhanced_chat_with_tools(
+            llm_client=FakeLLM(),
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[],
+            tool_registry={},
+            stream=False,
+            status=MagicMock(),
+            work_dir=tmp_path,
+            cfg=AnkaloopConfig(
+                servers={},
+                chat=ChatConfig(reasoning_as_content=True),
+                context=ContextConfig(),
+            ),
+        )
+
+        assert result == "trace"
+        assert agent.current_turn_reasoning_parts == []
+
+
 class TestAgentContextBudget:
     def test_resolve_model_name_from_spec(self, tmp_path):
         with (

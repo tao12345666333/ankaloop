@@ -236,12 +236,14 @@ async def send_prompt(session_id: str, request: PromptRequest) -> PromptResponse
             priority=request.priority.value,
         )
         response_text = await handle.wait()
+        outcome = handle.outcome
 
         return PromptResponse(
             session_id=session_id,
             message_id=handle.id,
             status="complete",
             response=response_text,
+            reasoning_content=outcome.reasoning_content if outcome else None,
             trace_id=handle.trace_id,
         )
 
@@ -405,6 +407,7 @@ async def get_turn(session_id: str, turn_id: str) -> dict[str, Any]:
         "turn_id": turn_id,
         "status": handle.status.value,
         "response": outcome.value if outcome else None,
+        "reasoning_content": outcome.reasoning_content if outcome else None,
         "error": str(outcome.error) if outcome and outcome.error else None,
         "error_envelope": envelope.to_dict() if envelope else None,
     }

@@ -421,6 +421,13 @@ class WebSocketClient:
                             chunk_type="text",
                             done=False,
                         )
+                    elif kind == "reasoning":
+                        yield ResponseChunk(
+                            content=content_chunk,
+                            chunk_type="reasoning",
+                            done=False,
+                            metadata=payload,
+                        )
                     elif kind == "tool":
                         tool_event = payload.get("event", "")
                         is_start = tool_event == "call_start"
