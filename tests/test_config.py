@@ -172,6 +172,44 @@ def test_decode_chat_active_provider_applies_profile():
     assert "model_config" not in encoded
 
 
+def test_requires_reasoning_echo_decode_apply_and_encode():
+    # Default: off, so providers that ignore a replayed reasoning trace never
+    # pay the prompt-token cost for it.
+    default_cfg = config_module._decode_chat({"model": "m"})
+    assert default_cfg is not None
+    assert default_cfg.requires_reasoning_echo is False
+
+    # Top-level setting without provider profiles round-trips.
+    top_cfg = config_module._decode_chat({"model": "m", "requires_reasoning_echo": True})
+    assert top_cfg is not None
+    assert top_cfg.requires_reasoning_echo is True
+    encoded_top = config_module._encode_chat(top_cfg)
+    assert encoded_top is not None
+    assert encoded_top["requires_reasoning_echo"] is True
+
+    # A provider profile setting wins through active_provider, round-trips in
+    # the profile, and is not duplicated at the top level.
+    profile_cfg = config_module._decode_chat(
+        {
+            "active_provider": "reflection",
+            "requires_reasoning_echo": False,
+            "providers": {
+                "reflection": {
+                    "base_url": "https://api.reflection.ai/openai/v1",
+                    "model": "Beam-1.0-501B-A23B",
+                    "requires_reasoning_echo": True,
+                }
+            },
+        }
+    )
+    assert profile_cfg is not None
+    assert profile_cfg.requires_reasoning_echo is True
+    encoded = config_module._encode_chat(profile_cfg)
+    assert encoded is not None
+    assert encoded["providers"]["reflection"]["requires_reasoning_echo"] is True
+    assert "requires_reasoning_echo" not in encoded
+
+
 def test_active_provider_reuses_key_for_same_base_url():
     cfg = config_module._decode_chat(
         {

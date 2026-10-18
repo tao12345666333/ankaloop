@@ -292,7 +292,9 @@ class TestAgentToolLimits:
                 self.calls += 1
                 if self.calls == 1:
                     raise pairing_error
-                self.seen_messages = messages
+                # Snapshot: the tool loop keeps appending to this list after
+                # the call returns (e.g. the final assistant message).
+                self.seen_messages = [dict(message) for message in messages]
                 return SimpleNamespace(content="recovered", tool_calls=None)
 
         with (

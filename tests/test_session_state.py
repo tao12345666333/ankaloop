@@ -114,11 +114,13 @@ async def test_tool_loop_returns_ordered_canonical_message_delta(tmp_path):
     assert isinstance(result, tuple)
     final, delta = result
     assert final == "done"
-    assert [message["role"] for message in delta] == ["assistant", "tool", "tool"]
-    assert [message["tool_call_id"] for message in delta[1:]] == [
+    assert [message["role"] for message in delta] == ["assistant", "tool", "tool", "assistant"]
+    assert [message["tool_call_id"] for message in delta[1:3]] == [
         "call-1",
         "call-2",
     ]
+    assert delta[-1]["content"] == "done"
+    assert "reasoning_content" not in delta[-1]
 
 
 @pytest.mark.asyncio
@@ -159,6 +161,94 @@ async def test_completed_turn_persists_full_tool_evidence_and_restarts(tmp_path)
     ]
     assert restarted.conversation_history == agent.conversation_history
     assert restarted._session_state.model_context() == agent.conversation_history
+
+
+def _echo_config() -> AnkaloopConfig:
+    return AnkaloopConfig(
+        servers={},
+        chat=ChatConfig(model="glm-4.7", requires_reasoning_echo=True),
+        context=ContextConfig(),
+    )
+
+
+class _ThinkingFakeLLM:
+    """Fake LLM whose responses carry a reasoning trace on every step."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, **_kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "name": "think",
+                        "arguments": json.dumps({"thought": "one"}),
+                    }
+                ],
+                thinking="trace-tool",
+                usage=None,
+            )
+        return SimpleNamespace(content="done", tool_calls=None, thinking="trace-final", usage=None)
+
+    async def aclose(self):
+        return None
+
+
+async def _run_thinking_turn(tmp_path, config: AnkaloopConfig) -> Agent:
+    with (
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
+        patch("ankaloop.agent.load_config", return_value=config),
+        patch(
+            "ankaloop.agent.run_user_prompt_hooks",
+            new=AsyncMock(return_value=HookOutput()),
+        ),
+        patch("ankaloop.llm.create_llm_client", return_value=_ThinkingFakeLLM()),
+    ):
+        agent = Agent(session_id="reasoning")
+        think = create_default_tool_registry(enable_task=False).get_tool("think")
+        with patch.object(
+            agent,
+            "_build_tools_and_registry",
+            new=AsyncMock(return_value=([think.get_spec()], {})),
+        ):
+            result = await agent._process_message("think", tmp_path, stream=False, show_progress=False)
+    assert result == "done"
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_completed_turn_replays_reasoning_content_in_history(tmp_path):
+    """Echo-enabled providers get reasoning_content replayed from history.
+
+    Reasoning-mandatory providers (e.g. Reflection) reject a request unless
+    every earlier assistant message carries the reasoning_content it was
+    returned with, so the tool loop stores it on both the tool-calling and
+    the final assistant message.
+    """
+    agent = await _run_thinking_turn(tmp_path, _echo_config())
+
+    history = agent.conversation_history
+    assert [message["role"] for message in history] == ["user", "assistant", "tool", "assistant"]
+    assert history[1]["reasoning_content"] == "trace-tool"
+    assert history[1]["tool_calls"][0]["id"] == "call-1"
+    assert history[3]["reasoning_content"] == "trace-final"
+    assert agent._session_state.model_context() == history
+
+
+@pytest.mark.asyncio
+async def test_reasoning_content_dropped_when_echo_disabled(tmp_path):
+    """Default providers never replay reasoning: storing it would only
+    inflate prompt tokens on every later turn."""
+    agent = await _run_thinking_turn(tmp_path, _config())
+
+    history = agent.conversation_history
+    assert [message["role"] for message in history] == ["user", "assistant", "tool", "assistant"]
+    assert all("reasoning_content" not in message for message in history)
+    assert history[3]["content"] == "done"
 
 
 @pytest.mark.asyncio
