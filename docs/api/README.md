@@ -205,9 +205,14 @@ Send a prompt to a session and return its status or complete response as JSON.
   "session_id": "a1b2c3d4",
   "message_id": "turn-123",
   "status": "complete",
-  "response": "I'll help you refactor..."
+  "response": "I'll help you refactor...",
+  "reasoning_content": null
 }
 ```
+
+`reasoning_content` carries the model's reasoning trace when it is exposed separately
+(the default). It is `null` when the model produced no reasoning or when
+`[chat] reasoning_as_content = true` folds reasoning into `response` instead.
 
 **Response** `409 Conflict`:
 ```json
@@ -226,13 +231,17 @@ turn status endpoint after disconnecting.
 
 ```jsonl
 {"type":"start","turn_id":"turn-123","session_id":"a1b2c3d4","status":"running"}
+{"type":"reasoning","turn_id":"turn-123","content":"Let me look at the code first..."}
 {"type":"chunk","turn_id":"turn-123","content":"I'll help "}
 {"type":"tool","turn_id":"turn-123","event":"call_start","tool_name":"read_file"}
 {"type":"chunk","turn_id":"turn-123","content":"you refactor..."}
 {"type":"complete","turn_id":"turn-123","status":"completed"}
 ```
 
-The shared HTTP/WebSocket frame types are `start`, `chunk`, `tool`, `error`, and `complete`.
+The shared HTTP/WebSocket frame types are `start`, `reasoning`, `chunk`, `tool`, `error`,
+and `complete`. `reasoning` frames carry the model's reasoning trace on their own channel;
+`chunk` frames carry answer content only. Reasoning frames appear only when the model emits
+reasoning and `[chat] reasoning_as_content` is left at its default `false`.
 Slow consumers receive an `error` frame with code `SLOW_CONSUMER`; the turn continues running.
 
 When a turn produces no events for `stream_keepalive_seconds` (server configuration, default 15s),
@@ -253,7 +262,9 @@ indefinitely; prompt timeouts raise `StreamTimeoutError` (a `PromptError` subcla
 
 #### GET `/sessions/{id}/turns/{turn_id}`
 
-Return the state and terminal result, when available, of a runtime-retained turn.
+Return the state and terminal result, when available, of a runtime-retained turn. The
+result includes `reasoning_content` alongside `response` when the turn produced a
+separate reasoning trace.
 
 #### POST `/sessions/{id}/cancel`
 
@@ -582,7 +593,7 @@ All errors follow this format:
 | `tool.call_start` | Tool execution started |
 | `tool.call_complete` | Tool execution completed |
 | `tool.call_error` | Tool execution failed |
-| `agent.thinking` | Agent thinking/planning |
+| `agent.thinking` | Agent thinking/planning; also carries model reasoning traces |
 | `agent.idle` | Agent returned to idle |
 | `prompt.received` | Prompt received (for multi-client sync) |
 | `prompt.started` | Prompt processing started |

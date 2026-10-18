@@ -103,6 +103,7 @@ class ToolLoop:
         # Reset per-request counters at the start of each request
         self._agent.current_request_tool_calls = 0
         self._agent.current_request_llm_calls = 0
+        self._agent.current_turn_reasoning_parts = []
 
         # Create a working copy of messages
         messages = [dict(message) for message in messages]
@@ -121,6 +122,14 @@ class ToolLoop:
 
         cfg = cfg or self._agent._resolve_turn_config()
         model_config = cfg.chat.model_config if cfg.chat else None
+        reasoning_as_content = bool(cfg.chat and cfg.chat.reasoning_as_content)
+
+        def _record_step_reasoning(resp) -> None:
+            """Accumulate reasoning separated from content for the turn result."""
+            thinking = getattr(resp, "thinking", None)
+            if thinking and not reasoning_as_content:
+                self._agent.current_turn_reasoning_parts.append(thinking)
+
         model = getattr(llm_client, "model", None) or self._agent._resolve_model_name(cfg)
         workspace_root = (work_dir or Path.cwd()).resolve()
         exposed_tools = {name for tool in tools if (name := tool.get("function", {}).get("name"))}
@@ -154,14 +163,20 @@ class ToolLoop:
                 f"[bold]Agent {self._agent.name}[/bold] - LLM Call {self._agent.current_request_llm_calls + 1}"
             )
 
-            # Define stream callback if streaming is enabled
+            # Define stream callbacks if streaming is enabled. Reasoning travels
+            # on its own event type so consumers can tell it apart from the answer.
             stream_callback = None
+            reasoning_callback = None
             if stream:
 
                 def _stream_callback(chunk: str):
                     self._agent._emit_event("message.chunk", {"content": chunk})
 
+                def _reasoning_callback(chunk: str):
+                    self._agent._emit_event("message.reasoning", {"content": chunk})
+
                 stream_callback = _stream_callback
+                reasoning_callback = _reasoning_callback
 
             messages = self._agent._fit_tool_context(messages, tools, input_token_budget)
             estimated_input_tokens = estimate_request_tokens(messages, tools)
@@ -171,6 +186,7 @@ class ToolLoop:
                     messages=messages,
                     tools=tools,
                     stream_callback=stream_callback,
+                    reasoning_callback=reasoning_callback,
                     cfg=cfg.chat,
                 )
             except Exception as call_error:
@@ -193,9 +209,11 @@ class ToolLoop:
                     messages=messages,
                     tools=tools,
                     stream_callback=stream_callback,
+                    reasoning_callback=reasoning_callback,
                     cfg=cfg.chat,
                 )
             self._agent._record_llm_usage(resp, estimated_input_tokens, context_window)
+            _record_step_reasoning(resp)
 
             if resp.tool_calls:
                 try:
@@ -269,6 +287,7 @@ class ToolLoop:
                             cfg=cfg.chat,
                         )
                         self._agent._record_llm_usage(final_resp, estimated_input_tokens, context_window)
+                        _record_step_reasoning(final_resp)
                         final_text = final_resp.content or ""
                         status.update(f"[bold]Agent {self._agent.name}[/bold] - ✅ Complete")
                         return completed(final_text)

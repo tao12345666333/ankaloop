@@ -5,6 +5,24 @@ All notable changes to AnkaLoop are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Model reasoning exposed as a separate channel** ([#82](https://github.com/tao12345666333/ankaloop/issues/82)):
+  reasoning-capable models (e.g. DeepSeek reasoning, GPT-5, models emitting `<think>` tags) no
+  longer have their reasoning folded into the answer stream by default. Streaming APIs emit
+  dedicated `reasoning` frames (`message.reasoning` agent events, `ResponseChunk` with
+  `chunk_type="reasoning"` in the Python clients, `agent.thinking` broadcasts on the server
+  event bus), and terminal results carry a `reasoning_content` field on `TurnResult`,
+  `PromptResponse`, and `GET /sessions/{id}/turns/{turn_id}`. `chunk` frames and `response`
+  now contain answer content only, including for models that wrap reasoning in `<think>` tags,
+  which are split out incrementally during streaming.
+- **`[chat] reasoning_as_content` config knob** (default `false`): set to `true` to restore the
+  legacy behavior of folding reasoning into message content with no separate reasoning channel.
+
+---
+
 ## [0.17.1] — 2026-10-17
 
 ### Added

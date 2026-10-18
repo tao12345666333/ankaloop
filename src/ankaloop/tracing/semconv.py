@@ -101,8 +101,8 @@ OPENINFERENCE_ALIASES = {
     GEN_AI_OUTPUT_MESSAGES: "output.value",
 }
 
-# Agent events that are mirrored onto the active span. ``message.chunk`` and
-# ``llm.usage`` are excluded: chunks are too chatty, and usage is recorded as
-# attributes on the ``chat`` span instead.
+# Agent events that are mirrored onto the active span. ``message.chunk``,
+# ``message.reasoning`` and ``llm.usage`` are excluded: stream deltas are too
+# chatty, and usage is recorded as attributes on the ``chat`` span instead.
 MIRRORED_EVENT_PREFIXES = ("turn.", "tool.", "provider.", "context.", "memory.")
-UNMIRRORED_EVENTS = frozenset({"llm.usage", "message.chunk"})
+UNMIRRORED_EVENTS = frozenset({"llm.usage", "message.chunk", "message.reasoning"})

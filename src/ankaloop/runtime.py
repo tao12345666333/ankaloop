@@ -118,6 +118,19 @@ class ErrorEnvelope:
 
 
 @dataclass(frozen=True)
+class TurnOutput:
+    """Processor return value for one completed turn.
+
+    ``response`` is the user-visible answer. ``reasoning_content`` carries the
+    turn's reasoning trace when reasoning is exposed on its own channel instead
+    of being folded into the response.
+    """
+
+    response: str
+    reasoning_content: str | None = None
+
+
+@dataclass(frozen=True)
 class TurnResult:
     """Terminal result stored for every turn."""
 
@@ -125,6 +138,7 @@ class TurnResult:
     value: str | None = None
     error: BaseException | None = None
     error_envelope: ErrorEnvelope | None = None
+    reasoning_content: str | None = None
 
     @classmethod
     def failed(cls, error: BaseException) -> TurnResult:
@@ -311,7 +325,7 @@ class TurnHandle:
                 callback(event)
 
 
-RuntimeProcessor = Callable[[TurnRequest], Coroutine[Any, Any, str]]
+RuntimeProcessor = Callable[[TurnRequest], Coroutine[Any, Any, str | TurnOutput]]
 RuntimeEventCallback = Callable[[str, TurnHandle], None]
 
 
@@ -346,7 +360,7 @@ class SessionRuntime:
         self._close_lock = asyncio.Lock()
         self._worker: asyncio.Task[None] | None = None
         self._active_handle: TurnHandle | None = None
-        self._active_task: asyncio.Task[str] | None = None
+        self._active_task: asyncio.Task[str | TurnOutput] | None = None
         self._closed = False
         self.status = SessionRuntimeStatus.IDLE
 
@@ -450,7 +464,7 @@ class SessionRuntime:
 
     async def cancel_turn(self, turn_id: str) -> bool:
         """Cancel a queued or active turn by ID."""
-        task: asyncio.Task[str] | None = None
+        task: asyncio.Task[str | TurnOutput] | None = None
         async with self._lock:
             handle = self._turns.get(turn_id)
             if handle is None or handle.done:
@@ -525,7 +539,7 @@ class SessionRuntime:
                 handle.started_at = datetime.now()
                 self.status = SessionRuntimeStatus.BUSY
                 self._emit("turn.running", handle)
-                task: asyncio.Task[str] = asyncio.create_task(
+                task: asyncio.Task[str | TurnOutput] = asyncio.create_task(
                     self._processor(handle.request),
                     name=f"ankaloop-turn-{handle.id}",
                 )
@@ -542,7 +556,15 @@ class SessionRuntime:
                 self.status = SessionRuntimeStatus.ERROR
                 self._emit("turn.failed", handle)
             else:
-                handle._finish(TurnResult(TurnStatus.COMPLETED, value=value))
+                if isinstance(value, TurnOutput):
+                    result = TurnResult(
+                        TurnStatus.COMPLETED,
+                        value=value.response,
+                        reasoning_content=value.reasoning_content,
+                    )
+                else:
+                    result = TurnResult(TurnStatus.COMPLETED, value=value)
+                handle._finish(result)
                 self.status = SessionRuntimeStatus.IDLE
                 self._emit("turn.completed", handle)
             finally:
@@ -564,6 +586,8 @@ class SessionRuntime:
         outcome = handle.outcome
         if outcome is not None:
             data["response"] = outcome.value
+            if outcome.reasoning_content is not None:
+                data["reasoning_content"] = outcome.reasoning_content
             if outcome.error is not None:
                 data["error"] = str(outcome.error)
             if outcome.error_envelope is not None:

@@ -259,6 +259,16 @@ class SessionManager:
                                     content=data["content"],
                                 )
                             )
+                        elif event_type == "message.reasoning":
+                            from .event_bridge import get_event_bridge
+
+                            bridge = get_event_bridge()
+                            loop.create_task(
+                                bridge.emit_agent_thinking(
+                                    session_id=data["session_id"],
+                                    content=data.get("content"),
+                                )
+                            )
                     except RuntimeError:
                         pass
 

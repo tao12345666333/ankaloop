@@ -494,6 +494,22 @@ def test_decode_chat_reasoning_effort_defaults_to_none():
     assert "reasoning_effort" not in encoded
 
 
+def test_decode_encode_chat_reasoning_as_content_roundtrip():
+    chat = config_module._decode_chat({"model": "test-model", "reasoning_as_content": True})
+    assert chat is not None
+    assert chat.reasoning_as_content is True
+    encoded = config_module._encode_chat(chat)
+    assert encoded["reasoning_as_content"] is True
+
+
+def test_decode_chat_reasoning_as_content_defaults_to_off():
+    chat = config_module._decode_chat({"model": "test-model"})
+    assert chat is not None
+    assert chat.reasoning_as_content is False
+    encoded = config_module._encode_chat(chat)
+    assert "reasoning_as_content" not in encoded
+
+
 def test_decode_encode_provider_reasoning_effort_roundtrip():
     raw = {
         "base_url": "https://openrouter.ai/api/v1",
