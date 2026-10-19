@@ -104,6 +104,13 @@ class _StreamingDeliveryManager:
         self._sealed_messages: list[str] = []
         self._overflow_message_id: int | None = None
         self._needs_flush: bool = False
+        # Reasoning stream (PR #83 "message.reasoning" channel): shown as a
+        # transient "thinking" indicator while the turn runs. It is tracked
+        # separately from the visible answer text and is *replaced* by the
+        # final response in ``finalize()`` — reasoning is never part of the
+        # delivered reply.
+        self._reasoning_buffer: str = ""
+        self._has_reasoning: bool = False
 
     def on_chunk(self, event_type: str, data: dict[str, Any]) -> None:
         """Synchronous callback invoked by the agent event system.
@@ -111,15 +118,35 @@ class _StreamingDeliveryManager:
         Only accumulates text; the actual Telegram edit is deferred to
         ``maybe_flush`` which runs in the async context of _process_message.
         """
+        if event_type == "message.reasoning":
+            thinking = data.get("content", "")
+            if not thinking:
+                return
+            # Accumulate reasoning separately; never mix into the answer buffer.
+            self._reasoning_buffer += thinking
+            self._has_reasoning = True
+            now = time.monotonic()
+            if len(self._reasoning_buffer) >= self._cfg.streaming_min_chars and (
+                now - self._last_edit_time >= self._cfg.streaming_interval_seconds
+            ):
+                self._needs_flush = True
+            return
         if event_type != "message.chunk":
             return
         chunk = data.get("content", "")
         if not chunk:
             return
+        # First visible content: the transient reasoning indicator is retired.
+        # Unconditionally request a flush so the switch from "thinking" to
+        # "answering" is visible right away instead of waiting for the next
+        # throttling window.
+        was_reasoning = self._has_reasoning
+        self._reasoning_buffer = ""
+        self._has_reasoning = False
         self._buffer += chunk
         now = time.monotonic()
-        if len(self._buffer) >= self._cfg.streaming_min_chars and (
-            now - self._last_edit_time >= self._cfg.streaming_interval_seconds
+        if (was_reasoning or len(self._buffer) >= self._cfg.streaming_min_chars) and (
+            was_reasoning or now - self._last_edit_time >= self._cfg.streaming_interval_seconds
         ):
             self._needs_flush = True
 
@@ -128,12 +155,19 @@ class _StreamingDeliveryManager:
 
         Called periodically from the async context in ``_process_message``.
         """
-        if not self._needs_flush or not self._buffer:
+        if not self._needs_flush:
             return
         self._needs_flush = False
         if not self._is_current():
             return
         self._last_edit_time = time.monotonic()
+        if not self._buffer:
+            # No visible answer yet: show the accumulated reasoning as a
+            # transient "thinking" indicator. It is replaced once answer
+            # content arrives or the turn finalizes.
+            if self._reasoning_buffer:
+                await self._edit_status(self._reasoning_buffer[-self._cfg.streaming_max_chars :])
+            return
         if len(self._buffer) > self._cfg.streaming_max_chars:
             seal_text = self._buffer[: self._cfg.streaming_max_chars]
             self._buffer = self._buffer[self._cfg.streaming_max_chars :]
@@ -164,6 +198,8 @@ class _StreamingDeliveryManager:
         if not self._is_current():
             return
         self._buffer = ""
+        self._reasoning_buffer = ""
+        self._has_reasoning = False
         chunks = self._formatter.format_response(full_response) if full_response else []
         if not chunks:
             return
