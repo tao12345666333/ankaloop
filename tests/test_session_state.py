@@ -163,6 +163,211 @@ async def test_completed_turn_persists_full_tool_evidence_and_restarts(tmp_path)
     assert restarted._session_state.model_context() == agent.conversation_history
 
 
+def _commit_simple_turn(agent: Agent, turn_id: str, user: str, assistant: str) -> None:
+    """Commit one user/assistant turn through the canonical save path."""
+    agent._session_state.commit_turn(
+        turn_id,
+        [
+            {"role": "user", "content": user},
+            {"role": "assistant", "content": assistant},
+        ],
+    )
+    agent._apply_session_state(agent._session_state)
+    agent._save_conversation_history()
+
+
+def _answer_with(side_effect):
+    """Mocked tool-building plus a tool loop that delegates to side_effect."""
+    return (
+        patch(
+            "ankaloop.agent.Agent._build_tools_and_registry",
+            new=AsyncMock(return_value=([], {})),
+        ),
+        patch(
+            "ankaloop.agent.Agent._run_with_tools",
+            new=AsyncMock(side_effect=side_effect),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_recreated_process_adopts_persisted_state_before_turn(tmp_path):
+    """A stale serving process self-heals at turn start: it adopts the store
+    state, so the model sees the full history and the commit applies."""
+    with (
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
+        patch("ankaloop.agent.load_config", return_value=_config()),
+        patch(
+            "ankaloop.agent.run_user_prompt_hooks",
+            new=AsyncMock(return_value=HookOutput()),
+        ),
+        patch("ankaloop.llm.create_llm_client", return_value=MagicMock(aclose=AsyncMock())),
+    ):
+        stale = Agent(session_id="recreated")
+        _commit_simple_turn(stale, "turn-1", "first", "one")
+
+        replacement = Agent(session_id="recreated")
+        _commit_simple_turn(replacement, "turn-2", "second", "two")
+        _commit_simple_turn(replacement, "turn-3", "third", "three")
+        assert replacement._session_state.revision == 3
+        assert stale._session_state.revision == 1
+
+        seen_messages: list[list[dict]] = []
+
+        async def answer(**kwargs):
+            seen_messages.append(kwargs["messages"])
+            return "four", []
+
+        build_patch, run_patch = _answer_with(answer)
+        with build_patch, run_patch:
+            result = await stale._process_message("fourth", tmp_path, stream=False, show_progress=False)
+
+        restarted = Agent(session_id="recreated")
+
+    assert result == "four"
+    context_contents = [message.get("content") for message in seen_messages[0]]
+    assert "second" in context_contents
+    assert "third" in context_contents
+    assert [turn.turn_id for turn in stale._session_state.turns][:3] == ["turn-1", "turn-2", "turn-3"]
+    assert stale._session_state.revision == 4
+    assert [message["content"] for message in restarted.conversation_history] == [
+        "first",
+        "one",
+        "second",
+        "two",
+        "third",
+        "three",
+        "fourth",
+        "four",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_commit_rebases_when_store_advances_mid_turn(tmp_path):
+    """When the store advances after the turn-start sync, the end-of-turn
+    commit rebases its append-only delta onto the persisted turns instead of
+    poisoning the session, and usage counters merge instead of resetting."""
+    with (
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
+        patch("ankaloop.agent.load_config", return_value=_config()),
+        patch(
+            "ankaloop.agent.run_user_prompt_hooks",
+            new=AsyncMock(return_value=HookOutput()),
+        ),
+        patch("ankaloop.llm.create_llm_client", return_value=MagicMock(aclose=AsyncMock())),
+    ):
+        stale = Agent(session_id="racy")
+        _commit_simple_turn(stale, "turn-1", "first", "one")
+
+        async def advance_store_then_answer(**_kwargs):
+            other = Agent(session_id="racy")
+            _commit_simple_turn(other, "turn-2", "second", "two")
+            other._session_state.commit_turn(
+                "turn-3",
+                [
+                    {"role": "user", "content": "third"},
+                    {"role": "assistant", "content": "three"},
+                ],
+            )
+            other.total_output_tokens = 7
+            other._save_conversation_history()
+            stale.total_input_tokens += 100  # this turn's own usage delta
+            return "late answer", []
+
+        build_patch, run_patch = _answer_with(advance_store_then_answer)
+        with build_patch, run_patch:
+            result = await stale._process_message("fourth", tmp_path, stream=False, show_progress=False)
+
+        restarted = Agent(session_id="racy")
+
+    assert result == "late answer"
+    assert [turn.turn_id for turn in restarted._session_state.turns][:3] == [
+        "turn-1",
+        "turn-2",
+        "turn-3",
+    ]
+    assert len(restarted._session_state.turns) == 4
+    assert restarted._session_state.revision == 4
+    assert [message["content"] for message in restarted.conversation_history] == [
+        "first",
+        "one",
+        "second",
+        "two",
+        "third",
+        "three",
+        "fourth",
+        "late answer",
+    ]
+    assert restarted.total_output_tokens == 7
+    assert restarted.total_input_tokens == 100
+
+
+@pytest.mark.asyncio
+async def test_commit_conflict_surfaces_when_store_diverges_mid_turn(tmp_path):
+    """A store that is not a forward extension of the process's state (here:
+    reset by another process) is true divergence — the conflict must surface
+    and the stale turn must not be resurrected onto the reset session."""
+    with (
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
+        patch("ankaloop.agent.load_config", return_value=_config()),
+        patch(
+            "ankaloop.agent.run_user_prompt_hooks",
+            new=AsyncMock(return_value=HookOutput()),
+        ),
+        patch("ankaloop.llm.create_llm_client", return_value=MagicMock(aclose=AsyncMock())),
+    ):
+        stale = Agent(session_id="diverged")
+        _commit_simple_turn(stale, "turn-1", "first", "one")
+
+        async def reset_store_then_answer(**_kwargs):
+            other = Agent(session_id="diverged")
+            await other.reset_session()
+            return "lost", []
+
+        build_patch, run_patch = _answer_with(reset_store_then_answer)
+        with (
+            build_patch,
+            run_patch,
+            pytest.raises(AgentExecutionError, match="changed from revision"),
+        ):
+            await stale._process_message("fourth", tmp_path, stream=False, show_progress=False)
+
+        restarted = Agent(session_id="diverged")
+
+    assert restarted.conversation_history == []
+    assert restarted._session_state.revision == 2
+
+
+def test_sync_adopts_store_state_even_when_store_is_older(tmp_path):
+    """A filesystem snapshot restore can roll the store back behind the
+    process's committed revision; the store stays the source of truth."""
+    with (
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
+        patch("ankaloop.agent.load_config", return_value=_config()),
+    ):
+        agent = Agent(session_id="rolled-back")
+        _commit_simple_turn(agent, "turn-1", "first", "one")
+        _commit_simple_turn(agent, "turn-2", "second", "two")
+        assert agent._session_state.revision == 2
+
+        rolled_back = SessionState(session_id="rolled-back", agent_name=agent.name)
+        rolled_back.commit_turn(
+            "turn-1",
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "one"},
+            ],
+        )
+        agent._session_store.delete()
+        agent._session_store.save(rolled_back.to_snapshot())
+        assert agent._session_store.read_revision() == 1
+
+        agent._sync_session_state_from_store()
+
+    assert [message["content"] for message in agent.conversation_history] == ["first", "one"]
+    assert agent._session_state.revision == 1
+
+
 def _echo_config() -> AnkaloopConfig:
     return AnkaloopConfig(
         servers={},
