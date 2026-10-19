@@ -52,7 +52,7 @@ from .runtime import (
 )
 from .session_search import get_transcript_store  # noqa: F401 - legacy patch seam
 from .session_state import SessionState
-from .session_store import SessionStore, SessionTimelineStore
+from .session_store import SessionConflictError, SessionStore, SessionTimelineStore
 from .skills import get_skill_manager
 from .tool_execution import (
     ToolCapability,
@@ -79,6 +79,7 @@ DEFAULT_BASH_TOOL_LIMIT = 100
 MEMORY_REVIEW_TURN_INTERVAL = 10
 MEMORY_LOG_USER_LIMIT = 1000
 MEMORY_LOG_AGENT_LIMIT = 2000
+SESSION_SAVE_MAX_ATTEMPTS = 3
 
 
 class AgentExecutionError(Exception):
@@ -312,13 +313,37 @@ class Agent:
         """Save the current canonical state, propagating commit failures."""
         candidate = self._session_state.clone()
         candidate = self._capture_session_state(candidate)
-        if not self.ephemeral:
-            candidate.revision = self._session_store.save(
-                candidate.to_snapshot(),
-                expected_revision=candidate.revision,
-            )
-        self._session_state = candidate
-        self._apply_session_state(candidate)
+        self._persist_session_state(candidate)
+
+    def _sync_session_state_from_store(self) -> None:
+        """Adopt the persisted state when the store no longer matches this process.
+
+        The serving process can be recreated underneath a long-lived session
+        (supervisor restart, sandbox pause/resume, snapshot restore) with a
+        stale in-memory revision while the store advanced — or rolled back —
+        outside it. The store is the source of truth: whenever its revision
+        differs from this process's committed revision, adopt the persisted
+        state before the next turn builds context on top of it.
+
+        This is an optimistic fast path: the store can still advance (or be
+        rolled back) between the revision probe, the load, and the
+        end-of-turn commit. The commit-time conflict check and rebase in
+        `_persist_session_state` are the actual consistency backstop.
+        """
+        if self.ephemeral or self._session_store.read_revision() == self._session_state.revision:
+            return
+        data = self._session_store.load()
+        if data is None:
+            return
+        persisted = SessionState.from_snapshot(data, self.session_id)
+        logger.warning(
+            "Session %s adopting persisted revision %s; this process held revision %s",
+            self.session_id,
+            persisted.revision,
+            self._session_state.revision,
+        )
+        self._session_state = persisted
+        self._apply_session_state(persisted)
 
     def _capture_session_state(self, state: SessionState) -> SessionState:
         """Copy compatibility attributes into one candidate session state."""
@@ -358,13 +383,115 @@ class Agent:
 
     def _commit_session_state(self, candidate: SessionState) -> None:
         """Persist a complete candidate before publishing it in memory."""
+        self._persist_session_state(candidate)
+
+    def _persist_session_state(self, candidate: SessionState) -> None:
+        """Persist a candidate, rebasing onto the newest store state on conflict.
+
+        A stale in-memory revision (see `_sync_session_state_from_store`)
+        makes a save attempt fail with `SessionConflictError`. Committed
+        turns are append-only, so the original candidate's delta is
+        re-applied onto the freshly persisted state and the save retried,
+        with a bound of SESSION_SAVE_MAX_ATTEMPTS so racing processes
+        converge instead of dropping completed turns. Only true divergence
+        or a store that still conflicts after the last attempt raises.
+        """
         if not self.ephemeral:
-            candidate.revision = self._session_store.save(
-                candidate.to_snapshot(),
-                expected_revision=candidate.revision,
-            )
+            original = candidate
+            for attempt in range(SESSION_SAVE_MAX_ATTEMPTS):
+                try:
+                    candidate.revision = self._session_store.save(
+                        candidate.to_snapshot(),
+                        expected_revision=candidate.revision,
+                    )
+                    break
+                except SessionConflictError as conflict:
+                    if attempt + 1 == SESSION_SAVE_MAX_ATTEMPTS:
+                        raise
+                    # Always rebase the original candidate: a previously
+                    # rebased candidate already contains the persisted turns
+                    # it lost to, and replaying them would duplicate turn IDs.
+                    candidate = self._rebase_session_candidate(original, conflict)
         self._session_state = candidate
         self._apply_session_state(candidate)
+
+    def _rebase_session_candidate(self, candidate: SessionState, conflict: SessionConflictError) -> SessionState:
+        """Re-apply a stale candidate's delta onto the persisted session state.
+
+        Returns a candidate rebuilt on the persisted state when that state is
+        a forward extension of this process's committed state; re-raises the
+        conflict on true divergence (e.g. the session was reset on disk).
+        """
+        committed = self._session_state
+        data = self._session_store.load()
+        if data is None:
+            raise conflict
+        persisted = SessionState.from_snapshot(data, self.session_id)
+        committed_turn_ids = [turn.turn_id for turn in committed.turns]
+        persisted_prefix_ids = [turn.turn_id for turn in persisted.turns[: len(committed.turns)]]
+        if (
+            persisted_prefix_ids != committed_turn_ids
+            or persisted.messages[: len(committed.messages)] != committed.messages
+        ):
+            raise conflict
+
+        rebased = persisted
+        for turn in candidate.turns[len(committed.turns) :]:
+            rebased.commit_turn(turn.turn_id, candidate.messages[turn.start_message : turn.end_message])
+
+        # Both checkpoints cover a verified shared turn prefix; keep the one
+        # that compacts more turns.
+        if candidate.checkpoint is not None and (
+            rebased.checkpoint is None
+            or candidate.checkpoint.covered_turn_count > rebased.checkpoint.covered_turn_count
+        ):
+            rebased.checkpoint = candidate.checkpoint
+
+        # Cumulative counters merge as persisted + this commit's delta;
+        # "last turn" observations come from the newest turn, the candidate's.
+        # The delta is clamped at 0: counters only grow within a commit, so a
+        # negative value would mean the candidate was built on an older
+        # snapshot than `committed`, and applying it would erase usage.
+        usage = rebased.usage
+        for field_name in (
+            "total_llm_calls",
+            "total_input_tokens",
+            "total_output_tokens",
+            "total_cached_input_tokens",
+            "total_cache_write_input_tokens",
+            "usage_reported_llm_calls",
+            "estimated_input_llm_calls",
+        ):
+            delta = max(0, getattr(candidate.usage, field_name) - getattr(committed.usage, field_name))
+            setattr(usage, field_name, getattr(usage, field_name) + delta)
+        usage.last_context_tokens = candidate.usage.last_context_tokens
+        usage.last_context_window = candidate.usage.last_context_window
+        usage.last_output_tokens = candidate.usage.last_output_tokens
+        usage.last_usage_from_api = candidate.usage.last_usage_from_api
+
+        committed_call_count = len(committed.tool_calls_history)
+        if rebased.tool_calls_history[:committed_call_count] == committed.tool_calls_history:
+            rebased.tool_calls_history = (
+                rebased.tool_calls_history + candidate.tool_calls_history[committed_call_count:]
+            )
+        else:
+            logger.warning(
+                "Session %s persisted tool_calls_history diverged from this process; "
+                "keeping the store's diagnostics and dropping this commit's tail",
+                self.session_id,
+            )
+        rebased.current_conversation_tool_calls = candidate.current_conversation_tool_calls
+        rebased.last_memory_review_turn_count = max(
+            candidate.last_memory_review_turn_count,
+            persisted.last_memory_review_turn_count,
+        )
+        logger.warning(
+            "Session %s rebased commit onto persisted revision %s after conflict: %s",
+            self.session_id,
+            persisted.revision,
+            conflict,
+        )
+        return rebased
 
     async def clear_conversation_history(self) -> None:
         """Cancel owned work and atomically replace the session state."""

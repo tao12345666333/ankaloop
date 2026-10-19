@@ -83,6 +83,10 @@ class TurnService:
         This is the core message processing logic, extracted from run()
         to support queue-based processing.
         """
+        # Adopt the persisted state first when this process was recreated
+        # underneath the session, so the model sees the full store history
+        # and the end-of-turn commit does not conflict on a stale revision.
+        self._agent._sync_session_state_from_store()
         committed_state = self._agent._session_state
         draft = committed_state.clone()
         self._agent._apply_session_state(draft)

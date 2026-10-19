@@ -5,6 +5,22 @@ All notable changes to AnkaLoop are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Session conflict poisoning after process recreation** ([#86](https://github.com/tao12345666333/ankaloop/issues/86)):
+  a serving process recreated underneath a long-lived session (supervisor restart, sandbox
+  pause/resume, snapshot restore) no longer fails every later turn with `SessionConflictError`.
+  Each turn now adopts the persisted state up front when the store revision differs from the
+  process's in-memory revision, so the model sees the full store history, and the end-of-turn
+  commit rebases its append-only turn delta onto the newest persisted state, with bounded
+  retries on conflict, instead of discarding the completed turn. True divergence (e.g. the
+  session was reset on disk) still surfaces the conflict, and stale owners still cannot reset
+  a newer session.
+
+---
+
 ## [0.18.0] — 2026-10-18
 
 ### Added

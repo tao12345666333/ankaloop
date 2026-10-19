@@ -1,4 +1,13 @@
-"""Safe JSON persistence for AnkaLoop sessions."""
+"""Safe JSON persistence for AnkaLoop sessions.
+
+Recovery contract for recreated serving processes (supervisor restart,
+sandbox pause/resume, snapshot restore): the store is the source of truth.
+A process that finds its in-memory revision behind — or otherwise diverged
+from — the persisted revision must adopt the latest persisted state, never
+an older caller-supplied snapshot. Turn commits are append-only, so a stale
+commit is rebased onto the persisted state and retried once; a destructive
+operation such as a session reset still surfaces `SessionConflictError`.
+"""
 
 from __future__ import annotations
 
@@ -261,6 +270,23 @@ class SessionStore:
                 "schema_version": SESSION_SCHEMA_VERSION,
                 "session_id": self.session_id,
             }
+
+    def read_revision(self) -> int:
+        """Return the persisted revision, or 0 when the session does not exist.
+
+        Best-effort probe, not a synchronized snapshot: it holds only the
+        process-local lock, so the result can go stale immediately (another
+        process may advance or delete the session right after). Writes
+        replace the file atomically, so the read itself always observes a
+        complete old or new file. Serving processes use this cheap probe to
+        detect that the store moved past their in-memory revision; the
+        end-of-turn conflict check and rebase are the actual consistency
+        backstop when the probe races a writer.
+        """
+        with self._lock:
+            if not self.path.exists():
+                return 0
+            return self._read_current_revision()
 
     def save(self, data: dict[str, Any], *, expected_revision: int | None = None) -> int:
         """Atomically save a session and reject stale owner revisions.
