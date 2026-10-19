@@ -14,10 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pause/resume, snapshot restore) no longer fails every later turn with `SessionConflictError`.
   Each turn now adopts the persisted state up front when the store revision differs from the
   process's in-memory revision, so the model sees the full store history, and the end-of-turn
-  commit rebases its append-only turn delta onto the newest persisted state and retries once on
-  conflict instead of discarding the completed turn. True divergence (e.g. the session was
-  reset on disk) still surfaces the conflict, and stale owners still cannot reset a newer
-  session.
+  commit rebases its append-only turn delta onto the newest persisted state, with bounded
+  retries on conflict, instead of discarding the completed turn. True divergence (e.g. the
+  session was reset on disk) still surfaces the conflict, and stale owners still cannot reset
+  a newer session.
 
 ---
 

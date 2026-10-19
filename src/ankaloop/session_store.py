@@ -274,9 +274,14 @@ class SessionStore:
     def read_revision(self) -> int:
         """Return the persisted revision, or 0 when the session does not exist.
 
-        Writes replace the file atomically, so an unlocked read observes a
-        complete old or new file; serving processes use this cheap probe to
-        detect that the store moved past their in-memory revision.
+        Best-effort probe, not a synchronized snapshot: it holds only the
+        process-local lock, so the result can go stale immediately (another
+        process may advance or delete the session right after). Writes
+        replace the file atomically, so the read itself always observes a
+        complete old or new file. Serving processes use this cheap probe to
+        detect that the store moved past their in-memory revision; the
+        end-of-turn conflict check and rebase are the actual consistency
+        backstop when the probe races a writer.
         """
         with self._lock:
             if not self.path.exists():

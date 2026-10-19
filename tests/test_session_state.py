@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ankaloop.agent import Agent, AgentExecutionError
+from ankaloop.agent import SESSION_SAVE_MAX_ATTEMPTS, Agent, AgentExecutionError
 from ankaloop.compaction import CompactionResult, CompactionStrategy
 from ankaloop.config import AnkaloopConfig, ChatConfig, ContextConfig
 from ankaloop.hooks import HookOutput
@@ -336,6 +336,137 @@ async def test_commit_conflict_surfaces_when_store_diverges_mid_turn(tmp_path):
 
     assert restarted.conversation_history == []
     assert restarted._session_state.revision == 2
+
+
+@pytest.mark.asyncio
+async def test_commit_converges_when_store_advances_repeatedly_mid_turn(tmp_path):
+    """The store advances twice — once before the first save and again
+    between the first rebase and its save. The bounded retry loop rebases
+    the original candidate onto the freshest state and the turn still lands."""
+    with (
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
+        patch("ankaloop.agent.load_config", return_value=_config()),
+        patch(
+            "ankaloop.agent.run_user_prompt_hooks",
+            new=AsyncMock(return_value=HookOutput()),
+        ),
+        patch("ankaloop.llm.create_llm_client", return_value=MagicMock(aclose=AsyncMock())),
+    ):
+        stale = Agent(session_id="double-race")
+        _commit_simple_turn(stale, "turn-1", "first", "one")
+
+        async def advance_store_then_answer(**_kwargs):
+            other = Agent(session_id="double-race")
+            _commit_simple_turn(other, "turn-2", "second", "two")
+            return "converged", []
+
+        original_rebase = Agent._rebase_session_candidate
+        advanced_again = False
+
+        def rebase_then_advance_again(self, candidate, conflict):
+            nonlocal advanced_again
+            rebased = original_rebase(self, candidate, conflict)
+            if not advanced_again:
+                advanced_again = True
+                late = Agent(session_id="double-race")
+                _commit_simple_turn(late, "turn-3", "third", "three")
+            return rebased
+
+        build_patch, run_patch = _answer_with(advance_store_then_answer)
+        with (
+            build_patch,
+            run_patch,
+            patch.object(Agent, "_rebase_session_candidate", new=rebase_then_advance_again),
+        ):
+            result = await stale._process_message("fourth", tmp_path, stream=False, show_progress=False)
+
+        restarted = Agent(session_id="double-race")
+
+    assert result == "converged"
+    assert [turn.turn_id for turn in restarted._session_state.turns][:3] == [
+        "turn-1",
+        "turn-2",
+        "turn-3",
+    ]
+    assert len(restarted._session_state.turns) == 4
+    assert restarted._session_state.revision == 4
+    assert [message["content"] for message in restarted.conversation_history] == [
+        "first",
+        "one",
+        "second",
+        "two",
+        "third",
+        "three",
+        "fourth",
+        "converged",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_commit_gives_up_after_bounded_rebase_attempts(tmp_path):
+    """A store that advances on every single attempt never converges, so the
+    conflict surfaces after SESSION_SAVE_MAX_ATTEMPTS saves — the retry loop
+    must be bounded and must not resurrect the turn on the failed state."""
+    with (
+        patch("ankaloop.agent.CONFIG_DIR", tmp_path / ".config" / "ankaloop"),
+        patch("ankaloop.agent.load_config", return_value=_config()),
+        patch(
+            "ankaloop.agent.run_user_prompt_hooks",
+            new=AsyncMock(return_value=HookOutput()),
+        ),
+        patch("ankaloop.llm.create_llm_client", return_value=MagicMock(aclose=AsyncMock())),
+    ):
+        stale = Agent(session_id="endless-race")
+        _commit_simple_turn(stale, "turn-1", "first", "one")
+
+        async def advance_store_then_answer(**_kwargs):
+            other = Agent(session_id="endless-race")
+            _commit_simple_turn(other, "turn-2", "second", "two")
+            return "lost", []
+
+        original_rebase = Agent._rebase_session_candidate
+        race_count = 0
+
+        def rebase_then_advance_again(self, candidate, conflict):
+            nonlocal race_count
+            race_count += 1
+            rebased = original_rebase(self, candidate, conflict)
+            late = Agent(session_id="endless-race")
+            _commit_simple_turn(late, f"racing-{race_count}", f"race {race_count}", f"raced {race_count}")
+            return rebased
+
+        original_save = stale._session_store.save
+        save_calls = 0
+
+        def counting_save(*args, **kwargs):
+            nonlocal save_calls
+            save_calls += 1
+            return original_save(*args, **kwargs)
+
+        build_patch, run_patch = _answer_with(advance_store_then_answer)
+        with (
+            build_patch,
+            run_patch,
+            patch.object(Agent, "_rebase_session_candidate", new=rebase_then_advance_again),
+            patch.object(stale._session_store, "save", side_effect=counting_save),
+            pytest.raises(AgentExecutionError, match="changed from revision"),
+        ):
+            await stale._process_message("fourth", tmp_path, stream=False, show_progress=False)
+
+        restarted = Agent(session_id="endless-race")
+
+    assert save_calls == SESSION_SAVE_MAX_ATTEMPTS
+    assert [message["content"] for message in restarted.conversation_history] == [
+        "first",
+        "one",
+        "second",
+        "two",
+        "race 1",
+        "raced 1",
+        "race 2",
+        "raced 2",
+    ]
+    assert [turn.turn_id for turn in stale._session_state.turns] == ["turn-1"]
 
 
 def test_sync_adopts_store_state_even_when_store_is_older(tmp_path):
