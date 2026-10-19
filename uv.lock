@@ -22,7 +22,7 @@ wheels = [
 
 [[package]]
 name = "ankaloop"
-version = "0.18.0"
+version = "0.18.1"
 source = { editable = "." }
 dependencies = [
     { name = "any-llm-sdk" },
