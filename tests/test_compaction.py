@@ -1,11 +1,12 @@
 """Tests for the smart compaction module."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from ankaloop.compaction import (
     COMPACT_PROMPT,
+    DEFAULT_OUTPUT_LIMIT,
     CompactionConfig,
     CompactionResult,
     CompactionStrategy,
@@ -13,6 +14,8 @@ from ankaloop.compaction import (
     estimate_request_tokens,
     estimate_tokens,
     get_model_context_window,
+    get_model_output_limit,
+    resolve_model_output_limit,
 )
 
 
@@ -92,6 +95,36 @@ class TestGetModelContextWindow:
         # (this test just verifies provider_id is accepted without error)
         result = get_model_context_window("some-unknown-model-xyz", model_config=mc)
         assert result > 0
+
+
+class TestResolveModelOutputLimit:
+    """Tests for resolve_model_output_limit (distinguishes unknown models)."""
+
+    def test_model_config_override_wins(self):
+        from ankaloop.config import ModelConfig
+
+        mc = ModelConfig(output_limit=4096)
+        assert resolve_model_output_limit("some-model", model_config=mc) == 4096
+
+    def test_unknown_model_returns_none(self):
+        with patch("ankaloop.models_db.load_models_cache", return_value=None):
+            assert resolve_model_output_limit("totally-unknown-model-xyz") is None
+
+    def test_database_hit_returns_limit(self):
+        from ankaloop.models_db import ModelInfo, ModelsDatabase, ProviderInfo
+
+        model = ModelInfo(id="custom-model", name="Custom", provider_id="custom", output_limit=12345)
+        provider = ProviderInfo(id="custom", name="Custom", models={"custom-model": model})
+        db = ModelsDatabase(providers={"custom": provider})
+
+        with patch("ankaloop.models_db.load_models_cache", return_value=db):
+            assert resolve_model_output_limit("custom-model") == 12345
+            assert resolve_model_output_limit("custom-model", provider_id="custom") == 12345
+
+    def test_get_model_output_limit_falls_back_for_unknown(self):
+        """The legacy getter keeps the DEFAULT_OUTPUT_LIMIT fallback contract."""
+        with patch("ankaloop.models_db.load_models_cache", return_value=None):
+            assert get_model_output_limit("totally-unknown-model-xyz") == DEFAULT_OUTPUT_LIMIT
 
 
 class TestEstimateTokens:

@@ -19,6 +19,7 @@ from .compaction import (
     estimate_request_tokens,
     get_model_context_window,
     get_model_output_limit,
+    resolve_model_output_limit,
 )
 from .config import ChatConfig, ModelConfig
 
@@ -40,6 +41,7 @@ class ProviderErrorKind(StrEnum):
     INVALID_REQUEST = "invalid_request"
     CONTEXT_OVERFLOW = "context_overflow"
     PROTOCOL = "protocol"
+    INCOMPLETE_STREAM = "incomplete_stream"
     UNKNOWN = "unknown"
 
 
@@ -70,9 +72,23 @@ class ProviderError(RuntimeError):
             ProviderErrorKind.INVALID_REQUEST: "Model provider rejected the request",
             ProviderErrorKind.CONTEXT_OVERFLOW: "Model request exceeds the configured context window",
             ProviderErrorKind.PROTOCOL: "Model provider returned an invalid response",
+            ProviderErrorKind.INCOMPLETE_STREAM: "Model provider stream ended before completion",
             ProviderErrorKind.UNKNOWN: "Model provider request failed",
         }
         super().__init__(messages[kind] + status)
+
+
+class IncompleteStreamError(ProviderError):
+    """The provider stream ended without a finish reason (dropped or aborted).
+
+    Raised when a streaming response terminates without ever carrying a
+    ``finish_reason``; whatever partial text already arrived must not be
+    treated as the complete answer. Retryable while nothing was emitted —
+    the caller clears that flag once partial output reached the user.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(ProviderErrorKind.INCOMPLETE_STREAM, retryable=True)
 
 
 class ContextOverflowError(ProviderError):
@@ -403,6 +419,24 @@ def _responses_usage(usage: Any) -> TokenUsage | None:
     )
 
 
+# Models already flagged for a missing output limit, so the warning fires once
+# per model per process instead of on every request.
+_unknown_output_limit_warned: set[str] = set()
+
+
+def _warn_unknown_output_limit(model: str) -> None:
+    """Warn once per model that requests carry no output-token cap."""
+    if model in _unknown_output_limit_warned:
+        return
+    _unknown_output_limit_warned.add(model)
+    logger.warning(
+        "No output-token limit is known for model '%s'; requests will omit max_tokens "
+        "and the provider's own default applies. Set output_limit in the model's config "
+        "([chat.model_config] or the provider profile) to choose a bound.",
+        model,
+    )
+
+
 class BaseLLMClient(ABC):
     """Base class for LLM clients."""
 
@@ -447,18 +481,24 @@ class BaseLLMClient(ABC):
             return self._request_timeout
         return 600.0
 
-    def _default_output_limit(self, model: str) -> int:
+    def _default_output_limit(self, model: str) -> int | None:
         """Output-token limit to send when the caller did not specify one.
 
         Some providers (e.g. OpenRouter) preflight requests against credit
         limits and assume worst-case output when the request carries no
-        limit, so always sending a bounded value avoids spurious rejections.
+        limit, so known models always send their resolved limit. Models the
+        database does not know return ``None`` here: the request then carries
+        no cap instead of a silent ``DEFAULT_OUTPUT_LIMIT`` cutoff, and the
+        provider's own default applies.
         """
-        return get_model_output_limit(
+        resolved = resolve_model_output_limit(
             model,
             provider_id=getattr(self, "_provider_id", None),
             model_config=getattr(self, "_model_config", None),
         )
+        if resolved is None:
+            _warn_unknown_output_limit(model)
+        return resolved
 
     def _validate_request_size(
         self,
@@ -673,7 +713,9 @@ class AnyLLMClient(BaseLLMClient):
             max_tokens=_largest_output_limit(output_limits),
         )
         if _largest_output_limit(output_limits) is None:
-            kwargs["max_tokens"] = self._default_output_limit(model)
+            default_output = self._default_output_limit(model)
+            if default_output is not None:
+                kwargs["max_tokens"] = default_output
         callback = stream_callback
         stream = callback is not None
         params: dict[str, Any] = {
@@ -715,7 +757,11 @@ class AnyLLMClient(BaseLLMClient):
                 if not choices:
                     continue
                 delta = _response_field(choices[0], "delta")
-                finish_reason = _response_field(choices[0], "finish_reason")
+                # Only the terminal chunk carries a finish reason; keep it once
+                # seen so trailing metadata chunks cannot blank it out.
+                chunk_finish_reason = _response_field(choices[0], "finish_reason")
+                if chunk_finish_reason:
+                    finish_reason = chunk_finish_reason
 
                 # Handle content
                 delta_content = _response_field(delta, "content")
@@ -751,6 +797,11 @@ class AnyLLMClient(BaseLLMClient):
                         extra_content = _extra_content(tc)
                         if extra_content is not None:
                             tool_calls_chunks[idx]["extra_content"] = extra_content
+
+            if finish_reason is None:
+                # Dropped connection, proxy timeout, or provider abort: the
+                # accumulated text is partial and must not become the answer.
+                raise IncompleteStreamError()
 
             router.flush()
 
@@ -843,7 +894,9 @@ class AnyLLMClient(BaseLLMClient):
             max_tokens=_largest_output_limit(output_limits),
         )
         if _largest_output_limit(output_limits) is None:
-            kwargs["max_tokens"] = self._default_output_limit(model)
+            default_output = self._default_output_limit(model)
+            if default_output is not None:
+                kwargs["max_tokens"] = default_output
         params: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -912,7 +965,11 @@ class AnyLLMClient(BaseLLMClient):
             if not choices:
                 continue
             delta = _response_field(choices[0], "delta")
-            finish_reason = _response_field(choices[0], "finish_reason")
+            # Only the terminal chunk carries a finish reason; keep it once
+            # seen so trailing metadata chunks cannot blank it out.
+            chunk_finish_reason = _response_field(choices[0], "finish_reason")
+            if chunk_finish_reason:
+                finish_reason = chunk_finish_reason
             content = _response_field(delta, "content")
             if content:
                 router.content(content)
@@ -935,6 +992,11 @@ class AnyLLMClient(BaseLLMClient):
                 extra = _extra_content(call)
                 if extra is not None:
                     current["extra_content"] = extra
+
+        if finish_reason is None:
+            # Dropped connection, proxy timeout, or provider abort: the
+            # accumulated text is partial and must not become the answer.
+            raise IncompleteStreamError()
 
         router.flush()
 
@@ -1114,7 +1176,8 @@ class OpenAIResponsesClient(BaseLLMClient):
                 elif event_type == "response.completed":
                     completed_response = _response_field(event, "response")
             if completed_response is None:
-                raise ValueError("Provider response stream ended without a completed response.")
+                # The stream ended without a terminal event (dropped or aborted).
+                raise IncompleteStreamError()
             return self._parse_response(completed_response)
 
         resp = self.client.responses(**params)
@@ -1182,7 +1245,8 @@ class OpenAIResponsesClient(BaseLLMClient):
             elif event_type == "response.completed":
                 completed_response = _response_field(event, "response")
         if completed_response is None:
-            raise ValueError("Provider response stream ended without a completed response.")
+            # The stream ended without a terminal event (dropped or aborted).
+            raise IncompleteStreamError()
         return self._parse_response(completed_response)
 
     @staticmethod

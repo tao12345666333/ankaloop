@@ -272,25 +272,45 @@ def get_model_context_window(
     return DEFAULT_CONTEXT_WINDOW
 
 
-def get_model_output_limit(
+def resolve_model_output_limit(
     model: str,
     provider_id: str | None = None,
     model_config: ModelConfig | None = None,
-) -> int:
-    """Get the model output limit, preferring an explicit configuration override."""
+) -> int | None:
+    """Resolve the model output limit from config or the model database.
+
+    Returns ``None`` when no source knows the model, so callers can choose
+    between omitting the request cap and applying a fallback.
+    """
     if model_config and model_config.output_limit and model_config.output_limit > 0:
         return model_config.output_limit
 
     effective_provider_id = provider_id or (model_config.provider_id if model_config else None)
     try:
-        from .models_db import get_output_limit_from_database
+        from .models_db import lookup_output_limit_from_database
 
-        return get_output_limit_from_database(model, effective_provider_id)
+        return lookup_output_limit_from_database(model, effective_provider_id)
     except ImportError:
-        return DEFAULT_OUTPUT_LIMIT
+        return None
     except Exception as e:
-        logger.debug(f"Failed to get output limit from database: {e}")
-        return DEFAULT_OUTPUT_LIMIT
+        logger.debug(f"Failed to resolve output limit from database: {e}")
+        return None
+
+
+def get_model_output_limit(
+    model: str,
+    provider_id: str | None = None,
+    model_config: ModelConfig | None = None,
+) -> int:
+    """Get the model output limit, falling back to ``DEFAULT_OUTPUT_LIMIT``.
+
+    Prefer :func:`resolve_model_output_limit` when an unknown model should not
+    silently inherit the fallback.
+    """
+    resolved = resolve_model_output_limit(model, provider_id, model_config)
+    if resolved is not None:
+        return resolved
+    return DEFAULT_OUTPUT_LIMIT
 
 
 def estimate_tokens(messages: list[dict[str, Any]], use_tiktoken: bool = True) -> int:

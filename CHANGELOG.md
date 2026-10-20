@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Truncated LLM responses no longer reported as clean success** ([#90](https://github.com/tao12345666333/ankaloop/issues/90)):
+  the tool loop now inspects the response `stop_reason` before accepting a final answer.
+  When the provider cuts the answer off (`finish_reason="length"` and equivalents), the loop
+  asks the model to continue (up to 3 continuations) and commits the concatenated text; if the
+  answer is still incomplete, the returned text is visibly marked as truncated, a warning is
+  printed and logged, and a `message.truncated` event is emitted. Streaming responses that end
+  without any finish reason (dropped connection, proxy timeout, provider abort) now raise
+  `IncompleteStreamError` — retried automatically when nothing was emitted yet, and surfaced as
+  a structured provider failure (`PROVIDER_INCOMPLETE_STREAM`) once partial output reached the
+  user — instead of silently committing partial text as the final message.
+- **Unknown models no longer capped at 8192 output tokens** ([#91](https://github.com/tao12345666333/ankaloop/issues/91)):
+  models missing from the model database (custom gateways, aliases, brand-new releases) now
+  send no `max_tokens` at all instead of the silent `DEFAULT_OUTPUT_LIMIT` fallback, so the
+  provider's own default applies. A one-time warning per model points operators at the
+  `[chat.model_config] output_limit` override, which continues to take precedence everywhere
+  `max_tokens` is computed.
+
 ---
 
 ## [0.18.1] — 2026-10-19
