@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,24 @@ from .ui import LiveUI
 if TYPE_CHECKING:
     from .agent import Agent
 logger = logging.getLogger(__name__)
+
+# Stop reasons meaning the provider cut the answer off. any-llm normalizes
+# provider-specific reasons to OpenAI-style "length"; the rest arrive raw from
+# gateways or from the Responses API status field.
+TRUNCATING_STOP_REASONS = frozenset(
+    {"length", "max_tokens", "max_output_tokens", "incomplete", "model_context_window_exceeded"}
+)
+
+# Bound on continuation requests for one truncated final answer before the
+# turn accepts (and marks) the partial text.
+MAX_ANSWER_CONTINUATIONS = 3
+
+# User-role instruction appended after a truncated partial answer so the model
+# resumes it instead of restarting.
+ANSWER_CONTINUATION_PROMPT = (
+    "Your previous answer was cut off by the output token limit. "
+    "Continue exactly where you stopped: no repetition, no preamble, no apology."
+)
 
 
 class ToolLoop:
@@ -140,7 +159,41 @@ class ToolLoop:
                 return text, message_delta
             return text
 
-        used_tools = False
+        answer_continuations = 0
+        partial_answer_parts: list[str] = []
+
+        def normalized_stop_reason(resp: Any) -> str | None:
+            reason = getattr(resp, "stop_reason", None)
+            if not isinstance(reason, str) or not reason.strip():
+                return None
+            return reason.strip().lower()
+
+        def apply_truncation_notice(text: str, stop_reason: str | None) -> str:
+            """Mark an answer the provider cut off so it is not reported as a clean success."""
+            if stop_reason not in TRUNCATING_STOP_REASONS:
+                return text
+            logger.warning(
+                "Final answer truncated by the provider (finish_reason=%s) after %d continuation(s)",
+                stop_reason,
+                answer_continuations,
+            )
+            self._agent.console.print(
+                f"[yellow]Response truncated by the provider's output limit "
+                f"(finish_reason={stop_reason}); the answer is incomplete[/yellow]"
+            )
+            self._agent._emit_event(
+                "message.truncated",
+                {
+                    "stop_reason": stop_reason,
+                    "continuations": answer_continuations,
+                    "content_length": len(text),
+                },
+            )
+            return (
+                f"{text}\n\n[Response truncated: the provider stopped with "
+                f"finish_reason={stop_reason}; the answer is incomplete. "
+                f"Ask the agent to continue.]"
+            )
 
         cfg = cfg or self._agent._resolve_turn_config()
         model_config = cfg.chat.model_config if cfg.chat else None
@@ -239,6 +292,12 @@ class ToolLoop:
             _record_step_reasoning(resp)
 
             if resp.tool_calls:
+                if partial_answer_parts:
+                    # A truncated answer being continued produced tool calls
+                    # instead of more text; keep the earlier chunks attached to
+                    # this assistant message so history stays complete.
+                    resp = replace(resp, content="".join(partial_answer_parts) + (resp.content or ""))
+                    partial_answer_parts.clear()
                 try:
                     tool_calls = normalize_tool_calls(resp.tool_calls)
                 except ToolCallProtocolError as protocol_error:
@@ -249,7 +308,6 @@ class ToolLoop:
                         protocol_error,
                     )
                     tool_calls = normalize_tool_calls(protocol_error.tool_calls)
-                used_tools = True
                 status.update(f"[bold]Agent {self._agent.name}[/bold] - Executing {len(tool_calls)} tool(s)...")
 
                 # Check if any tool should be limited before processing
@@ -310,7 +368,10 @@ class ToolLoop:
                         )
                         self._agent._record_llm_usage(final_resp, estimated_input_tokens, context_window)
                         _record_step_reasoning(final_resp)
-                        final_text = final_resp.content or ""
+                        final_text = apply_truncation_notice(
+                            final_resp.content or "",
+                            normalized_stop_reason(final_resp),
+                        )
                         # Persist the forced final reply (with its reasoning
                         # trace) so the turn ends on a committed assistant
                         # message, like the normal completion path below.
@@ -625,11 +686,32 @@ class ToolLoop:
 
                 continue
             else:
-                # No tool calls, return the response
-                final_text = resp.content or ""
-                if stream and not used_tools:
-                    # For streaming, we'll implement a simple version
-                    pass
+                # No tool calls: the turn ends here unless the provider cut the
+                # answer off (finish_reason="length"), in which case the model
+                # is asked to continue and the chunks are concatenated.
+                stop_reason = normalized_stop_reason(resp)
+                if stop_reason in TRUNCATING_STOP_REASONS and answer_continuations < MAX_ANSWER_CONTINUATIONS:
+                    answer_continuations += 1
+                    chunk = resp.content or ""
+                    partial_answer_parts.append(chunk)
+                    logger.warning(
+                        "Final answer stopped with finish_reason=%s; requesting continuation %d/%d",
+                        stop_reason,
+                        answer_continuations,
+                        MAX_ANSWER_CONTINUATIONS,
+                    )
+                    status.update(f"[bold]Agent {self._agent.name}[/bold] - Continuing truncated answer...")
+                    # The continuation exchange stays out of the committed
+                    # delta: history keeps only the concatenated final message.
+                    messages.append({"role": "assistant", "content": chunk})
+                    messages.append({"role": "user", "content": ANSWER_CONTINUATION_PROMPT})
+                    continue
+
+                if partial_answer_parts:
+                    resp = replace(resp, content="".join(partial_answer_parts) + (resp.content or ""))
+                    partial_answer_parts.clear()
+
+                final_text = apply_truncation_notice(resp.content or "", stop_reason)
 
                 # Persist the final assistant message in the turn delta (with
                 # its reasoning trace when the provider opted into

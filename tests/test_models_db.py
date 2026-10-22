@@ -10,11 +10,14 @@ import pytest
 from ankaloop.models_db import (
     BUILTIN_MODELS,
     DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_OUTPUT_LIMIT,
     ModelInfo,
     ModelsDatabase,
     ProviderInfo,
     get_context_window_from_database,
+    get_output_limit_from_database,
     load_models_cache,
+    lookup_output_limit_from_database,
     save_models_cache,
 )
 
@@ -184,6 +187,35 @@ class TestGetContextWindowFromDatabase:
         with patch("ankaloop.models_db.load_models_cache", return_value=db):
             result = get_context_window_from_database("custom-model")
             assert result == 999999
+
+
+class TestLookupOutputLimitFromDatabase:
+    """Tests for lookup_output_limit_from_database (no silent fallback)."""
+
+    def test_returns_none_when_no_cache(self):
+        with patch("ankaloop.models_db.load_models_cache", return_value=None):
+            assert lookup_output_limit_from_database("unknown-model-xyz") is None
+
+    def test_returns_none_for_unknown_model(self):
+        model = ModelInfo(id="custom-model", name="Custom", output_limit=4096)
+        provider = ProviderInfo(id="custom", name="Custom", models={"custom-model": model})
+        db = ModelsDatabase(providers={"custom": provider})
+
+        with patch("ankaloop.models_db.load_models_cache", return_value=db):
+            assert lookup_output_limit_from_database("unknown-model-xyz") is None
+
+    def test_returns_limit_by_name_and_provider(self):
+        model = ModelInfo(id="custom-model", name="Custom", provider_id="custom", output_limit=4096)
+        provider = ProviderInfo(id="custom", name="Custom", models={"custom-model": model})
+        db = ModelsDatabase(providers={"custom": provider})
+
+        with patch("ankaloop.models_db.load_models_cache", return_value=db):
+            assert lookup_output_limit_from_database("custom-model") == 4096
+            assert lookup_output_limit_from_database("custom-model", provider_id="custom") == 4096
+
+    def test_get_output_limit_falls_back_to_default(self):
+        with patch("ankaloop.models_db.load_models_cache", return_value=None):
+            assert get_output_limit_from_database("unknown-model-xyz") == DEFAULT_OUTPUT_LIMIT
 
 
 class TestCacheFunctions:

@@ -9,11 +9,13 @@ import pytest
 from any_llm.types.completion import Reasoning
 
 from ankaloop.auth import ApiKeyCommandError
+from ankaloop.compaction import DEFAULT_OUTPUT_LIMIT
 from ankaloop.config import ChatConfig, ModelConfig
 from ankaloop.llm import (
     AnthropicClient,
     AnyLLMClient,
     ContextOverflowError,
+    IncompleteStreamError,
     LLMResponse,
     OpenAIClient,
     OpenAIResponsesClient,
@@ -22,6 +24,19 @@ from ankaloop.llm import (
     create_llm_client,
     normalize_reasoning_effort,
 )
+
+
+def terminal_chunk(finish_reason="stop"):
+    """Final streaming chunk carrying the provider's finish reason."""
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content=None, reasoning=None, tool_calls=None),
+                finish_reason=finish_reason,
+            )
+        ],
+        usage=None,
+    )
 
 
 class TestLLMResponse:
@@ -867,6 +882,7 @@ class TestOpenAIClient:
                 delta_chunk("ink>plan"),
                 delta_chunk("ning</thi"),
                 delta_chunk("nk>Answer"),
+                terminal_chunk(),
             ]
         )
         streamed_chunks = []
@@ -899,7 +915,13 @@ class TestOpenAIClient:
             )
 
         client.client.completion = lambda **_kwargs: iter(
-            [delta_chunk("<think>"), delta_chunk("plan"), delta_chunk("</think>"), delta_chunk("Answer")]
+            [
+                delta_chunk("<think>"),
+                delta_chunk("plan"),
+                delta_chunk("</think>"),
+                delta_chunk("Answer"),
+                terminal_chunk(),
+            ]
         )
         streamed_chunks = []
 
@@ -911,6 +933,152 @@ class TestOpenAIClient:
         assert streamed_chunks == ["<think>", "plan", "</think>", "Answer"]
         assert response.content == "Answer"
         assert response.thinking == "plan"
+
+    def test_streaming_chat_raises_when_finish_reason_never_arrives(self):
+        """A stream that ends without a finish reason is incomplete, not a final answer."""
+        client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
+
+        def delta_chunk(content):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content=content, reasoning=None, tool_calls=None),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            )
+
+        client.client.completion = lambda **_kwargs: iter([delta_chunk("partial"), delta_chunk(" answer")])
+
+        with pytest.raises(IncompleteStreamError) as error:
+            client.chat([{"role": "user", "content": "hello"}], stream_callback=lambda _chunk: None)
+
+        assert error.value.kind == ProviderErrorKind.INCOMPLETE_STREAM
+        assert error.value.retryable is True
+
+    def test_streaming_chat_keeps_finish_reason_after_terminal_chunk(self):
+        """Metadata chunks after the terminal chunk must not blank the finish reason."""
+        client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
+        client.client.completion = lambda **_kwargs: iter(
+            [
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content="done", reasoning=None, tool_calls=None),
+                            finish_reason="stop",
+                        )
+                    ],
+                    usage=None,
+                ),
+                # Trailing metadata chunk with no finish reason of its own.
+                terminal_chunk(finish_reason=None),
+            ]
+        )
+
+        response = client.chat([{"role": "user", "content": "hello"}], stream_callback=lambda _chunk: None)
+
+        assert response.content == "done"
+        assert response.stop_reason == "stop"
+
+    @pytest.mark.asyncio
+    async def test_achat_streaming_raises_when_finish_reason_never_arrives(self):
+        client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
+
+        async def acompletion(**_kwargs):
+            async def events():
+                yield SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content="partial", reasoning=None, tool_calls=None),
+                            finish_reason=None,
+                        )
+                    ],
+                    usage=None,
+                )
+
+            return events()
+
+        client.client.acompletion = acompletion
+
+        with pytest.raises(IncompleteStreamError):
+            await client.achat([{"role": "user", "content": "hello"}], stream_callback=lambda _chunk: None)
+
+    def test_chat_omits_max_tokens_when_model_output_limit_unknown(self):
+        """Unknown models send no cap instead of the silent DEFAULT_OUTPUT_LIMIT cutoff."""
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="gateway-model-no-limit",
+        )
+        captured = self._capture_completion(client)
+
+        with patch("ankaloop.llm.resolve_model_output_limit", return_value=None):
+            client.chat([{"role": "user", "content": "hello"}])
+
+        assert "max_tokens" not in captured
+
+    def test_chat_warns_once_per_unknown_model(self, caplog):
+        import ankaloop.llm as llm_module
+
+        client = OpenAIClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            model="gateway-model-warn-once",
+        )
+        self._capture_completion(client)
+        llm_module._unknown_output_limit_warned.discard(("gateway-model-warn-once", "openai"))
+
+        with (
+            patch("ankaloop.llm.resolve_model_output_limit", return_value=None),
+            caplog.at_level("WARNING", logger="ankaloop.llm"),
+        ):
+            client.chat([{"role": "user", "content": "hello"}])
+            client.chat([{"role": "user", "content": "again"}])
+
+        warnings = [r for r in caplog.records if r.name == "ankaloop.llm" and "gateway-model-warn-once" in r.message]
+        assert len(warnings) == 1
+        assert "output_limit" in warnings[0].message
+
+    def test_chat_anthropic_unknown_model_sends_fallback_output_limit(self, caplog):
+        """Anthropic requires max_tokens: unknown models get the 32K fallback, not any-llm's 8192."""
+        import ankaloop.llm as llm_module
+
+        client = AnthropicClient(
+            api_key="test-key",
+            model="claude-gateway-model-no-limit",
+            base_url="https://anthropic-gateway.example.com",
+        )
+        captured = self._capture_completion(client)
+        llm_module._unknown_output_limit_warned.discard(("claude-gateway-model-no-limit", "anthropic"))
+
+        with (
+            patch("ankaloop.llm.resolve_model_output_limit", return_value=None),
+            caplog.at_level("WARNING", logger="ankaloop.llm"),
+        ):
+            client.chat([{"role": "user", "content": "hello"}])
+
+        assert captured["max_tokens"] == DEFAULT_OUTPUT_LIMIT
+        warnings = [
+            r for r in caplog.records if r.name == "ankaloop.llm" and "claude-gateway-model-no-limit" in r.message
+        ]
+        assert len(warnings) == 1
+        assert str(DEFAULT_OUTPUT_LIMIT) in warnings[0].message
+        assert "output_limit" in warnings[0].message
+
+    def test_chat_anthropic_known_model_sends_resolved_limit(self):
+        """The Anthropic fallback only applies when no source knows the model."""
+        client = AnthropicClient(
+            api_key="test-key",
+            model="claude-gateway-model-known",
+            base_url="https://anthropic-gateway.example.com",
+        )
+        captured = self._capture_completion(client)
+
+        with patch("ankaloop.llm.resolve_model_output_limit", return_value=64000):
+            client.chat([{"role": "user", "content": "hello"}])
+
+        assert captured["max_tokens"] == 64000
 
     def test_chat_raises_clear_error_when_choices_missing(self):
         client = OpenAIClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
@@ -1100,6 +1268,21 @@ class TestOpenAIResponsesClient:
 
         assert chunks == ["done"]
         assert reasoning_chunks == ["thinking..."]
+
+    def test_responses_stream_without_completed_event_raises_incomplete_stream(self):
+        """A Responses stream ending without a terminal event is an incomplete stream."""
+        client = OpenAIResponsesClient(base_url="https://api.openai.com/v1", api_key="test-key", model="gpt-5.5")
+
+        def responses(**_kwargs):
+            return iter([SimpleNamespace(type="response.output_text.delta", delta="partial")])
+
+        client.client = SimpleNamespace(responses=responses)
+
+        with pytest.raises(IncompleteStreamError) as error:
+            client.chat([{"role": "user", "content": "hello"}], stream_callback=lambda _chunk: None)
+
+        assert error.value.kind == ProviderErrorKind.INCOMPLETE_STREAM
+        assert error.value.retryable is True
 
     @staticmethod
     def _responses_client_with_limit(output_limit: int) -> OpenAIResponsesClient:

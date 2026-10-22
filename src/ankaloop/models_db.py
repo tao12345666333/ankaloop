@@ -11,6 +11,9 @@ from typing import Any
 
 import httpx
 
+# Re-exported so existing ``models_db.DEFAULT_OUTPUT_LIMIT`` consumers keep
+# working; compaction owns the single definition.
+from .compaction import DEFAULT_OUTPUT_LIMIT
 from .constants import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
@@ -25,7 +28,6 @@ DEFAULT_CACHE_TTL_DAYS = 7
 
 # Default context window for unknown models
 DEFAULT_CONTEXT_WINDOW = 200_000
-DEFAULT_OUTPUT_LIMIT = 8192
 
 
 @dataclass
@@ -449,11 +451,15 @@ def get_context_window_from_database(
     return DEFAULT_CONTEXT_WINDOW
 
 
-def get_output_limit_from_database(
+def lookup_output_limit_from_database(
     model_name: str,
     provider_id: str | None = None,
-) -> int:
-    """Get the maximum output size for a model from the cached model database."""
+) -> int | None:
+    """Look up the maximum output size for a model without applying a fallback.
+
+    Returns ``None`` when the cached database does not know the model, so
+    callers can distinguish "no data" from a real limit.
+    """
     db = load_models_cache()
 
     if db:
@@ -466,4 +472,15 @@ def get_output_limit_from_database(
         if model and model.output_limit > 0:
             return model.output_limit
 
+    return None
+
+
+def get_output_limit_from_database(
+    model_name: str,
+    provider_id: str | None = None,
+) -> int:
+    """Get the maximum output size for a model from the cached model database."""
+    limit = lookup_output_limit_from_database(model_name, provider_id)
+    if limit is not None:
+        return limit
     return DEFAULT_OUTPUT_LIMIT
