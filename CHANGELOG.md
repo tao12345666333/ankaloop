@@ -22,9 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Unknown models no longer capped at 8192 output tokens** ([#91](https://github.com/tao12345666333/ankaloop/issues/91)):
   models missing from the model database (custom gateways, aliases, brand-new releases) now
   send no `max_tokens` at all instead of the silent `DEFAULT_OUTPUT_LIMIT` fallback, so the
-  provider's own default applies. A one-time warning per model points operators at the
-  `[chat.model_config] output_limit` override, which continues to take precedence everywhere
-  `max_tokens` is computed.
+  provider's own default applies. The Anthropic API requires `max_tokens`, so unknown models
+  on Anthropic-protocol endpoints send an explicit `DEFAULT_OUTPUT_LIMIT` instead — raised
+  from 8192 to 32768 to match the current model landscape (models.dev: ~80% of models allow
+  ≥32K output) — rather than the smaller 8192 any-llm would backfill. A one-time warning per
+  model points operators at the `[chat.model_config] output_limit` override, which continues
+  to take precedence everywhere `max_tokens` is computed.
 
 ---
 

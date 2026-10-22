@@ -11,6 +11,9 @@ from typing import Any
 
 import httpx
 
+# Re-exported so existing ``models_db.DEFAULT_OUTPUT_LIMIT`` consumers keep
+# working; compaction owns the single definition.
+from .compaction import DEFAULT_OUTPUT_LIMIT
 from .constants import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
@@ -25,7 +28,6 @@ DEFAULT_CACHE_TTL_DAYS = 7
 
 # Default context window for unknown models
 DEFAULT_CONTEXT_WINDOW = 200_000
-DEFAULT_OUTPUT_LIMIT = 8192
 
 
 @dataclass

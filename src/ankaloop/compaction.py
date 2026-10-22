@@ -69,7 +69,12 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 
 # Default context window for unknown models
 DEFAULT_CONTEXT_WINDOW = 200_000
-DEFAULT_OUTPUT_LIMIT = 8192
+# Fallback output-token limit for unknown models. 32K matches the current
+# model landscape (models.dev: ~80% of models allow >=32K output, median 128K);
+# the previous 8192 under-reserved output space in request-size preflight now
+# that unknown models send no explicit cap. Single source of truth; models_db
+# re-exports it.
+DEFAULT_OUTPUT_LIMIT = 32768
 
 
 class CompactionStrategy(Enum):

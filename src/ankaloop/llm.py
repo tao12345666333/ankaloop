@@ -16,6 +16,7 @@ import httpx
 
 from .auth import ApiKeyCommandError, format_auth_header, resolve_api_key_command
 from .compaction import (
+    DEFAULT_OUTPUT_LIMIT,
     estimate_request_tokens,
     get_model_context_window,
     get_model_output_limit,
@@ -420,21 +421,36 @@ def _responses_usage(usage: Any) -> TokenUsage | None:
 
 
 # Models already flagged for a missing output limit, so the warning fires once
-# per model per process instead of on every request.
-_unknown_output_limit_warned: set[str] = set()
+# per model/provider pair per process instead of on every request.
+_unknown_output_limit_warned: set[tuple[str, str | None]] = set()
 
 
-def _warn_unknown_output_limit(model: str) -> None:
-    """Warn once per model that requests carry no output-token cap."""
-    if model in _unknown_output_limit_warned:
+def _warn_unknown_output_limit(model: str, provider_id: str | None = None) -> None:
+    """Warn once per model that no output-token limit is known.
+
+    The remediation differs by provider: most APIs accept a request without a
+    cap (the provider default applies), but Anthropic requires ``max_tokens``,
+    so requests there carry the ``DEFAULT_OUTPUT_LIMIT`` fallback instead.
+    """
+    key = (model, provider_id)
+    if key in _unknown_output_limit_warned:
         return
-    _unknown_output_limit_warned.add(model)
-    logger.warning(
-        "No output-token limit is known for model '%s'; requests will omit max_tokens "
-        "and the provider's own default applies. Set output_limit in the model's config "
-        "([chat.model_config] or the provider profile) to choose a bound.",
-        model,
-    )
+    _unknown_output_limit_warned.add(key)
+    if provider_id == "anthropic":
+        logger.warning(
+            "No output-token limit is known for model '%s'; Anthropic requires max_tokens, "
+            "so requests will carry the fallback of %d tokens. Set output_limit in the model's "
+            "config ([chat.model_config] or the provider profile) to choose a bound.",
+            model,
+            DEFAULT_OUTPUT_LIMIT,
+        )
+    else:
+        logger.warning(
+            "No output-token limit is known for model '%s'; requests will omit max_tokens "
+            "and the provider's own default applies. Set output_limit in the model's config "
+            "([chat.model_config] or the provider profile) to choose a bound.",
+            model,
+        )
 
 
 class BaseLLMClient(ABC):
@@ -490,14 +506,22 @@ class BaseLLMClient(ABC):
         database does not know return ``None`` here: the request then carries
         no cap instead of a silent ``DEFAULT_OUTPUT_LIMIT`` cutoff, and the
         provider's own default applies.
+
+        Anthropic is the exception: its API requires ``max_tokens`` on every
+        request, and any-llm backfills its own 8192 when the field is unset —
+        a worse cutoff than a deliberate modern default. Unknown Anthropic
+        models therefore send ``DEFAULT_OUTPUT_LIMIT`` (32K) explicitly.
         """
+        provider_id = getattr(self, "_provider_id", None)
         resolved = resolve_model_output_limit(
             model,
-            provider_id=getattr(self, "_provider_id", None),
+            provider_id=provider_id,
             model_config=getattr(self, "_model_config", None),
         )
         if resolved is None:
-            _warn_unknown_output_limit(model)
+            _warn_unknown_output_limit(model, provider_id)
+            if provider_id == "anthropic":
+                return DEFAULT_OUTPUT_LIMIT
         return resolved
 
     def _validate_request_size(
