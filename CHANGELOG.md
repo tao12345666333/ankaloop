@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model points operators at the `[chat.model_config] output_limit` override, which continues
   to take precedence everywhere `max_tokens` is computed.
 - **Telegram streaming shows a transient "thinking" indicator while the model reasons**
-  ([#83](https://github.com/tao12345666333/ankaloop/pull/83)): the Telegram streaming delivery
+  ([#89](https://github.com/tao12345666333/ankaloop/pull/89)): the Telegram streaming delivery
   manager now consumes the `message.reasoning` channel added in 0.18.0. Reasoning text is shown
   as a transient status indicator while the turn runs and is replaced by the final response, so
   Telegram users see that the agent is working during long reasoning phases (e.g.

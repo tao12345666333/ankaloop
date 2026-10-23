@@ -145,8 +145,9 @@ class _StreamingDeliveryManager:
         self._has_reasoning = False
         self._buffer += chunk
         now = time.monotonic()
-        if (was_reasoning or len(self._buffer) >= self._cfg.streaming_min_chars) and (
-            was_reasoning or now - self._last_edit_time >= self._cfg.streaming_interval_seconds
+        if was_reasoning or (
+            len(self._buffer) >= self._cfg.streaming_min_chars
+            and now - self._last_edit_time >= self._cfg.streaming_interval_seconds
         ):
             self._needs_flush = True
 
