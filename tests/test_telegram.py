@@ -1611,6 +1611,110 @@ def test_streaming_delivery_manager_ignores_non_chunk_events():
     assert manager._needs_flush is False
 
 
+def test_streaming_delivery_manager_accumulates_reasoning_separately():
+    """Reasoning events accumulate into a transient buffer, never the answer buffer."""
+    from ankaloop.telegram.bot import _StreamingDeliveryManager
+
+    formatter = TelegramFormatter(max_length=4096)
+    cfg = TelegramStreamingConfig(streaming_min_chars=2, streaming_interval_seconds=0.0)
+    edits: list[str] = []
+
+    class _FakeBot:
+        def _get_telegram_message_id(self, msg):
+            return 42
+
+        async def _edit_text(self, chat_id, message_id, text, markdown=False):
+            edits.append(text)
+            return True
+
+        async def send_text(self, chat_id, text):
+            pass
+
+        async def send_markdown(self, chat_id, text):
+            pass
+
+    bot = _FakeBot()
+    manager = _StreamingDeliveryManager(
+        bot=bot,
+        chat_id=123,
+        status_message_id=1,
+        formatter=formatter,
+        cfg=cfg,
+        is_current=lambda: True,
+    )
+
+    # Reasoning chunks accumulate separately and mark a flush as needed.
+    manager.on_chunk("message.reasoning", {"content": "think"})
+    manager.on_chunk("message.reasoning", {"content": "ing"})
+    assert manager._reasoning_buffer == "thinking"
+    assert manager._has_reasoning is True
+    assert manager._buffer == ""
+    assert manager._needs_flush is True
+
+    # Maybe flush while no answer is available: reasoning is shown as the
+    # transient "thinking" indicator.
+    asyncio.run(manager.maybe_flush())
+    assert len(edits) == 1
+    assert edits[0] == "thinking"
+
+    # The first answer chunk retires the reasoning indicator and keeps it out
+    # of the answer buffer.
+    manager.on_chunk("message.chunk", {"content": "Answer"})
+    assert manager._buffer == "Answer"
+    assert manager._reasoning_buffer == ""
+    assert manager._has_reasoning is False
+    assert manager._needs_flush is True
+
+    asyncio.run(manager.maybe_flush())
+    assert edits[-1] == "Answer"
+    # Reasoning is never mixed into the delivered answer.
+    assert "thinking" not in edits[-1]
+
+
+def test_streaming_delivery_manager_finalize_overrides_reasoning():
+    """finalize() replaces the transient reasoning with the final response."""
+    from ankaloop.telegram.bot import _StreamingDeliveryManager
+
+    formatter = TelegramFormatter(max_length=4096)
+    cfg = TelegramStreamingConfig(streaming_min_chars=1, streaming_interval_seconds=0.0)
+    edits: list[str] = []
+
+    class _FakeBot:
+        def _get_telegram_message_id(self, msg):
+            return 42
+
+        async def _edit_text(self, chat_id, message_id, text, markdown=False):
+            edits.append(text)
+            return True
+
+        async def send_text(self, chat_id, text):
+            pass
+
+        async def send_markdown(self, chat_id, text):
+            pass
+
+    bot = _FakeBot()
+    manager = _StreamingDeliveryManager(
+        bot=bot,
+        chat_id=123,
+        status_message_id=1,
+        formatter=formatter,
+        cfg=cfg,
+        is_current=lambda: True,
+    )
+
+    # Reasoning is accumulated but never delivered before the final answer.
+    manager.on_chunk("message.reasoning", {"content": "secret thinking"})
+    assert manager._reasoning_buffer == "secret thinking"
+    asyncio.run(manager.finalize("Final answer"))
+    assert manager._reasoning_buffer == ""
+    assert manager._has_reasoning is False
+    assert len(edits) == 1
+    assert edits[0] == "Final answer"
+    # The reasoning text is not part of the delivered message.
+    assert "thinking" not in edits[0]
+
+
 def test_streaming_delivery_manager_flush_edits_message():
     """Test that maybe_flush edits the status message with accumulated text."""
     from ankaloop.telegram.bot import _StreamingDeliveryManager
