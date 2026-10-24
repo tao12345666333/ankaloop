@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.18.2] — 2026-10-24
+
 ### Fixed
 
 - **Truncated LLM responses no longer reported as clean success** ([#90](https://github.com/tao12345666333/ankaloop/issues/90)):
