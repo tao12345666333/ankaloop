@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.18.3] — 2026-10-24
+
+### Changed
+
+- Version-only release: 0.18.2 was published from a tag outside the standard PR-based
+  release flow; 0.18.3 ships the same content through the normal PR process. No functional
+  changes.
+
+---
+
+## [0.18.2] — 2026-10-24
+
 ### Fixed
 
 - **Memory dream no longer silently skips events**:
