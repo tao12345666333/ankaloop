@@ -23,6 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Memory dream no longer silently skips events**:
+  a consolidation pass fetched only the newest `DREAM_MAX_EVENTS` (80) events and persisted the
+  window maximum as the `last_event_id` cursor, so any backlog that grew past one window between
+  passes (long dream intervals, many concurrent sessions) was skipped forever. The dreamer now
+  pages through every unconsolidated event oldest-first via the new
+  `SQLiteMemoryStore.get_events_after` and consolidates them in batches of `DREAM_MAX_EVENTS` per
+  LLM call, advancing the cursor only over consolidated batches — no event is dropped while each
+  prompt stays bounded.
+- **Memory dream stale-lock takeover no longer races**:
+  two dreamers could both conclude the same stale lock was theirs to take over (each read the
+  stale timestamp, then unlinked the file, so the second unlink could delete the winner's freshly
+  created lock) and run consolidation concurrently. Takeover is now atomic: the lock file is moved
+  aside with a unique rename that only one process can win, the moved file's timestamp is
+  re-checked before creating a replacement, a still-live lock is put back untouched, and release
+  only removes the lock token the current acquisition wrote.
+
 - **Truncated LLM responses no longer reported as clean success** ([#90](https://github.com/tao12345666333/ankaloop/issues/90)):
   the tool loop now inspects the response `stop_reason` before accepting a final answer.
   When the provider cuts the answer off (`finish_reason="length"` and equivalents), the loop
