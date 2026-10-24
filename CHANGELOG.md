@@ -9,17 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.18.3] — 2026-10-24
-
-### Changed
-
-- Version-only release: 0.18.2 was published from a tag outside the standard PR-based
-  release flow; 0.18.3 ships the same content through the normal PR process. No functional
-  changes.
-
----
-
-## [0.18.2] — 2026-10-24
+## [0.18.4] — 2026-10-25
 
 ### Fixed
 
@@ -38,6 +28,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aside with a unique rename that only one process can win, the moved file's timestamp is
   re-checked before creating a replacement, a still-live lock is put back untouched, and release
   only removes the lock token the current acquisition wrote.
+
+---
+
+## [0.18.3] — 2026-10-24
+
+### Changed
+
+- Version-only release: 0.18.2 was published from a tag outside the standard PR-based
+  release flow; 0.18.3 ships the same content through the normal PR process. No functional
+  changes.
+
+---
+
+## [0.18.2] — 2026-10-24
+
+### Fixed
 
 - **Truncated LLM responses no longer reported as clean success** ([#90](https://github.com/tao12345666333/ankaloop/issues/90)):
   the tool loop now inspects the response `stop_reason` before accepting a final answer.
