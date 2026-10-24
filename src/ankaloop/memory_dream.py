@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -69,18 +71,17 @@ class MemoryDreamer:
         self.memory_dir = MemoryStore.get_project_memory_dir(project_root)
         self.state_file = self.memory_dir / "dream_state.json"
         self.lock_file = self.memory_dir / "dream.lock"
+        self._lock_token: str | None = None
 
     def run_once(self) -> DreamRunResult:
         """Run one gated consolidation pass."""
         state = self._load_state()
-        events = self._recent_events()
-        if not events:
+        last_event_id = int(state.get("last_event_id", 0))
+        batch = self._pending_events(last_event_id)
+        if not batch:
             return DreamRunResult(ran=False, updated=False, reason="no_events")
 
-        latest_event_id = max(int(event.get("id", 0)) for event in events)
-        last_event_id = int(state.get("last_event_id", 0))
-        new_events = [event for event in events if int(event.get("id", 0)) > last_event_id]
-        if len(new_events) < self.min_new_events:
+        if len(batch) < self.min_new_events:
             return DreamRunResult(ran=False, updated=False, reason="not_enough_new_events")
 
         last_attempt_at = max(
@@ -110,34 +111,42 @@ class MemoryDreamer:
                 )
                 return DreamRunResult(ran=True, updated=True, reason="updated")
 
-            updated_memory = self._consolidate(events)
-            if not updated_memory:
-                self._save_state({"last_run_at": time.time(), "last_event_id": latest_event_id})
-                return DreamRunResult(ran=True, updated=False, reason="no_reply")
-
             manager = get_memory_manager(self.project_root)
-            if not manager.write_long_term(updated_memory, scope="project"):
-                self._save_state(
-                    {
-                        **state,
-                        "last_attempt_at": time.time(),
-                        "pending_memory": updated_memory,
-                        "pending_event_id": latest_event_id,
-                    }
-                )
-                return DreamRunResult(ran=True, updated=False, reason="write_failed")
-            self._save_state({"last_run_at": time.time(), "last_event_id": latest_event_id})
-            return DreamRunResult(ran=True, updated=True, reason="updated")
+            updated_any = False
+            # Consolidate every unconsolidated event, batch by batch, so a backlog that
+            # grew past one batch (long dream intervals, many concurrent sessions) is
+            # never skipped: the cursor only advances over consolidated batches.
+            while batch:
+                batch_last_event_id = max(int(event.get("id", 0)) for event in batch)
+                updated_memory = self._consolidate(batch)
+                if updated_memory:
+                    if not manager.write_long_term(updated_memory, scope="project"):
+                        self._save_state(
+                            {
+                                **state,
+                                "last_attempt_at": time.time(),
+                                "pending_memory": updated_memory,
+                                "pending_event_id": batch_last_event_id,
+                            }
+                        )
+                        return DreamRunResult(ran=True, updated=updated_any, reason="write_failed")
+                    self._save_state({"last_run_at": time.time(), "last_event_id": batch_last_event_id})
+                    updated_any = True
+                else:
+                    self._save_state({"last_run_at": time.time(), "last_event_id": batch_last_event_id})
+                batch = self._pending_events(batch_last_event_id)
+            return DreamRunResult(ran=True, updated=updated_any, reason="updated" if updated_any else "no_reply")
         except Exception as e:
             logger.debug(f"Memory dream failed (non-critical): {e}")
             return DreamRunResult(ran=True, updated=False, reason="error")
         finally:
             self._release_lock()
 
-    def _recent_events(self) -> list[dict[str, Any]]:
+    def _pending_events(self, after_id: int) -> list[dict[str, Any]]:
+        """Fetch the next batch of unconsolidated events (id > ``after_id``), oldest first."""
         manager = get_memory_manager(self.project_root)
         try:
-            return manager.project_store._sqlite.get_recent_events(limit=DREAM_MAX_EVENTS)
+            return manager.project_store._sqlite.get_events_after(after_id, limit=DREAM_MAX_EVENTS)
         except Exception as e:
             logger.debug(f"Could not load dream events: {e}")
             return []
@@ -169,7 +178,7 @@ class MemoryDreamer:
     @staticmethod
     def _format_events(events: list[dict[str, Any]]) -> str:
         lines: list[str] = []
-        for event in reversed(events):
+        for event in events:
             content = str(event.get("content", "")).strip()
             if not content:
                 continue
@@ -195,24 +204,93 @@ class MemoryDreamer:
 
     def _acquire_lock(self) -> bool:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            with self.lock_file.open("x", encoding="utf-8") as f:
-                f.write(str(time.time()))
+        token = f"{time.time()} {uuid.uuid4().hex}"
+        while True:
+            try:
+                with self.lock_file.open("x", encoding="utf-8") as f:
+                    f.write(token)
+            except FileExistsError:
+                text = self._read_lock_text(self.lock_file)
+                if text == token:
+                    # A losing stealer moved our just-created lock aside and put
+                    # it back; the file still carries our token, so it is ours.
+                    self._lock_token = token
+                    return True
+                written = self._lock_written_at(text)
+                if written is None or time.time() - written < DREAM_LOCK_STALE_SECONDS:
+                    # Live (or unreadable) lock: the normal "locked" outcome, and
+                    # the file is left untouched for its owner to release.
+                    return False
+                if not self._steal_stale_lock():
+                    return False
+                continue
+            if self._read_lock_text(self.lock_file) != token:
+                # A concurrent takeover moved our just-created lock away before
+                # the token landed; only the takeover winner may keep the lock.
+                continue
+            self._lock_token = token
             return True
-        except FileExistsError:
-            try:
-                age = time.time() - float(self.lock_file.read_text(encoding="utf-8") or "0")
-            except (OSError, ValueError):
-                age = 0
-            if age < DREAM_LOCK_STALE_SECONDS:
+
+    def _steal_stale_lock(self) -> bool:
+        """Atomically take over a stale lock file.
+
+        Renaming the lock to a unique per-process name selects a single winner
+        among concurrent takeover attempts, so two processes can never both
+        conclude that the same stale lock is theirs to take over. The moved
+        file's timestamp is re-checked after the rename; a lock that was
+        replaced with a live one in the meantime is put back untouched.
+        """
+        stolen = self.lock_file.with_name(f"{self.lock_file.name}.{uuid.uuid4().hex}.stolen")
+        try:
+            os.rename(self.lock_file, stolen)
+        except FileNotFoundError:
+            return True  # the lock vanished while we raced for it; retry the create
+        try:
+            written = self._lock_written_at(self._read_lock_text(stolen))
+            if written is None or time.time() - written < DREAM_LOCK_STALE_SECONDS:
+                # A live lock was created between our staleness check and the
+                # rename; put it back so its owner can release it.
+                if not self.lock_file.exists():
+                    os.replace(stolen, self.lock_file)
                 return False
-            try:
-                self.lock_file.unlink()
-            except OSError:
-                return False
-            return self._acquire_lock()
+        finally:
+            stolen.unlink(missing_ok=True)
+        return True
+
+    @staticmethod
+    def _read_lock_text(path: Path) -> str | None:
+        """Lock file text, or ``None`` when it cannot be read."""
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    @staticmethod
+    def _lock_written_at(text: str | None) -> float | None:
+        """Timestamp recorded in lock file text, or ``None`` when unreadable."""
+        if text is None:
+            return None
+        if not text.strip():
+            return 0.0  # empty lock file is treated as maximally stale
+        try:
+            return float(text.split(maxsplit=1)[0])
+        except ValueError:
+            return None
 
     def _release_lock(self) -> None:
+        token, self._lock_token = self._lock_token, None
+        if not token:
+            return
+        try:
+            current = self.lock_file.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            logger.debug(f"Could not read memory dream lock: {e}")
+            return
+        if current != token:
+            # The lock file now belongs to another acquisition; leave it alone.
+            return
         try:
             self.lock_file.unlink()
         except FileNotFoundError:

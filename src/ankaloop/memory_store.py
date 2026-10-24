@@ -191,6 +191,23 @@ class SQLiteMemoryStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_events_after(self, after_id: int = 0, limit: int = 50) -> list[dict]:
+        """Get events with an id greater than ``after_id``, ordered oldest-first.
+
+        Args:
+            after_id: Exclusive lower bound on event ids (a consolidation cursor).
+            limit: Maximum number of events to return.
+
+        Returns:
+            List of event dicts ordered oldest-first.
+        """
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, timestamp, session_id, content, tags, source FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
+            (after_id, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     # --- Facts (declarative) ---
 
     def upsert_fact(
