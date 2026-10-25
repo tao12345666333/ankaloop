@@ -46,7 +46,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from .constants import CONFIG_DIR_NAME, PROJECT_DIR_NAME
+from .constants import CONFIG_DIR, PROJECT_DIR_NAME
 from .tracing import hook_env_vars, hook_span, set_attributes
 from .tracing import semconv as sc
 
@@ -366,7 +366,7 @@ class HooksManager:
             return
 
         # Load user-level config
-        user_config_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / CONFIG_DIR_NAME
+        user_config_dir = CONFIG_DIR
         user_hooks_file = user_config_dir / "hooks.toml"
         if user_hooks_file.exists():
             self._load_config_file(user_hooks_file)
@@ -580,7 +580,7 @@ class HooksManager:
         """Load hooks from plugin directories."""
         plugin_dirs = [
             self.project_dir / PROJECT_DIR_NAME / "plugins",
-            Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / CONFIG_DIR_NAME / "plugins",
+            CONFIG_DIR / "plugins",
         ]
 
         for plugin_base in plugin_dirs:
