@@ -286,6 +286,42 @@ enabled = false
 
             assert len(handlers) == 0
 
+    def test_user_hooks_come_from_config_dir(self, tmp_path, monkeypatch):
+        """User-level hooks resolve through the shared CONFIG_DIR constant.
+
+        ``hooks.py`` used to reassemble the user config dir from
+        ``XDG_CONFIG_HOME`` at load time instead of importing
+        ``constants.CONFIG_DIR`` like the other modules. Anything that
+        rebinds the config dir the way ``constants.CONFIG_DIR`` consumers do
+        (memory, sessions, event bus, …) would silently keep its hooks — or
+        lose them — because hooks kept reading the default XDG location.
+        """
+        rebound = tmp_path / "rebound" / "ankaloop"
+        rebound.mkdir(parents=True)
+        (rebound / "hooks.toml").write_text(
+            """
+[hooks.PreToolUse]
+[[hooks.PreToolUse.handlers]]
+matcher = "write_file"
+type = "command"
+command = "echo rebound-toml"
+enabled = true
+"""
+        )
+        hooks_dir = rebound / "hooks"
+        hooks_dir.mkdir()
+        (hooks_dir / "warn-bash.md").write_text(
+            "---\nname: warn-bash\nenabled: true\nevent: bash\naction: warn\n---\n\nCareful with bash.\n"
+        )
+        monkeypatch.setattr("ankaloop.hooks.CONFIG_DIR", rebound)
+
+        manager = HooksManager(tmp_path)
+
+        toml_handlers = manager.get_handlers(HookEvent.PRE_TOOL_USE, "write_file")
+        assert [h.command for h in toml_handlers] == ["echo rebound-toml"]
+        markdown_handlers = manager.get_handlers(HookEvent.PRE_TOOL_USE, "bash")
+        assert any(h.name == "warn-bash" for h in markdown_handlers)
+
 
 class TestHookExecution:
     """Tests for hook execution."""
