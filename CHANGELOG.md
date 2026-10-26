@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.18.5] — 2026-10-26
+
+### Fixed
+
+- **Heartbeat replies [SILENT] when there are no tasks**
+  (PR #98), avoiding noisy no-op output.
+
+---
+
 ## [0.18.4] — 2026-10-25
 
 ### Fixed
