@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import subprocess
+import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from prompt_toolkit import PromptSession
@@ -334,6 +337,63 @@ def serve_command(
     )
 
 
+logger = logging.getLogger(__name__)
+
+# Watchdog tuning for the Telegram bot thread. A transient failure (e.g. the
+# sandbox network not being ready yet, or a Telegram timeout during startup)
+# must not permanently kill the bot: retry forever with capped backoff.
+TELEGRAM_WATCHDOG_INITIAL_DELAY = 5.0
+TELEGRAM_WATCHDOG_MAX_DELAY = 60.0
+
+
+def _telegram_bot_watchdog(
+    bot_factory: Callable[..., Any],
+    *,
+    token: str,
+    allowed_users: set[int],
+    admin_users: set[int],
+    work_dir: Path | None,
+    config: Any,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Run the Telegram bot loop in a worker thread, restarting on failure.
+
+    The old behavior printed a bare "Telegram bot failed to start" and let the
+    thread die — on the Blaxel sandbox a transient startup network error
+    (Telegram TimedOut / ENETUNREACH) killed the bot for the remaining lifetime
+    of the server process. This loop keeps retrying with exponential backoff
+    (5s, capped at TELEGRAM_WATCHDOG_MAX_DELAY) until the bot runs, or until a
+    clean stop (start_polling/start_webhook returning without exception).
+    """
+    attempt = 0
+    delay = TELEGRAM_WATCHDOG_INITIAL_DELAY
+    while True:
+        attempt += 1
+        try:
+            bot = bot_factory(
+                token=token,
+                allowed_users=allowed_users,
+                admin_users=admin_users,
+                work_dir=work_dir,
+                config=config,
+            )
+            if config.webhook_mode and config.webhook_url:
+                asyncio.run(bot.start_webhook(config.webhook_url))
+            else:
+                asyncio.run(bot.start_polling())
+            # Clean return: intentional stop (e.g. /shutdown), do not respawn.
+            logger.info("Telegram bot stopped cleanly; watchdog exiting")
+            return
+        except Exception:
+            logger.exception(
+                "Telegram bot failed to start (attempt %d); retrying in %.0fs",
+                attempt,
+                delay,
+            )
+        sleep(delay)
+        delay = min(delay * 2, TELEGRAM_WATCHDOG_MAX_DELAY)
+
+
 def _start_telegram_bot(work_dir: Path | None) -> None:
     cfg = load_config()
     if not cfg.telegram or not cfg.telegram.bot_token:
@@ -355,26 +415,20 @@ def _start_telegram_bot(work_dir: Path | None) -> None:
     telegram_cfg = cfg.telegram
 
     def run_bot() -> None:
-        try:
-            bot = TelegramBot(
-                token=token,
-                allowed_users=allowed,
-                admin_users=admin,
-                work_dir=work_dir,
-                config=telegram_cfg,
-            )
-            if telegram_cfg.webhook_mode and telegram_cfg.webhook_url:
-                asyncio.run(bot.start_webhook(telegram_cfg.webhook_url))
-            else:
-                asyncio.run(bot.start_polling())
-        except Exception:
-            console.print("[red]Telegram bot failed to start[/red]")
+        _telegram_bot_watchdog(
+            TelegramBot,
+            token=token,
+            allowed_users=allowed,
+            admin_users=admin,
+            work_dir=work_dir,
+            config=telegram_cfg,
+        )
 
     import threading
 
     thread = threading.Thread(target=run_bot, daemon=True)
     thread.start()
-    console.print("[green]Telegram bot started in background[/green]")
+    console.print("[green]Telegram bot started in background (watchdog enabled)[/green]")
 
 
 @app.command("attach", help="Connect to a running AnkaLoop server")
