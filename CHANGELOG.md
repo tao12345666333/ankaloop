@@ -13,8 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previously exited permanently on any startup error (e.g. a Telegram timeout while the host
   sandbox network was still coming up), leaving the bot unresponsive for the rest of the server's
   lifetime while only a bare "Telegram bot failed to start" line was logged. The thread is now a
-  watchdog loop that retries indefinitely with capped exponential backoff (5s → 60s), logs full
-  tracebacks, and does not respawn after a clean stop.
+  watchdog loop that retries indefinitely with capped exponential backoff (5s → 60s), releases the
+  bot's global registrations (telegram_* tools, EventBus notification handlers) between attempts,
+  logs full tracebacks, and does not respawn after a clean stop.
 
 ---
 

@@ -369,6 +369,7 @@ def _telegram_bot_watchdog(
     delay = TELEGRAM_WATCHDOG_INITIAL_DELAY
     while True:
         attempt += 1
+        bot: Any = None
         try:
             bot = bot_factory(
                 token=token,
@@ -385,6 +386,16 @@ def _telegram_bot_watchdog(
             logger.info("Telegram bot stopped cleanly; watchdog exiting")
             return
         except Exception:
+            # start_polling/start_webhook register the telegram_* tools and the
+            # notification handlers on the global EventBus before touching the
+            # network; a failed attempt must release them again, or every retry
+            # stacks another set of registrations (duplicate notifications and
+            # tools stuck pointing at a dead bot).
+            if bot is not None:
+                try:
+                    asyncio.run(bot.stop())
+                except Exception:
+                    logger.exception("Failed to clean up Telegram bot after startup failure")
             logger.exception(
                 "Telegram bot failed to start (attempt %d); retrying in %.0fs",
                 attempt,

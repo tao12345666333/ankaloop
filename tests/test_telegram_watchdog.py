@@ -119,6 +119,98 @@ def test_watchdog_backoff_is_capped_and_loops_forever() -> None:
     assert sleeps.calls[-1] == TELEGRAM_WATCHDOG_MAX_DELAY
 
 
+def test_watchdog_releases_global_registrations_between_attempts() -> None:
+    """A failed attempt must not leak its global registrations.
+
+    start_polling registers EventBus notification handlers and the telegram_*
+    tools before touching the network. If a startup attempt fails, the watchdog
+    must release them (via bot.stop()) before retrying, or each retry stacks
+    another set of registrations: duplicate notifications once the network
+    recovers, and tools left pointing at a dead bot that a healthy bot can never
+    re-register.
+    """
+    from ankaloop.event_bus import EventType, get_event_bus
+
+    sleeps = _SleepRecorder()
+    bus = get_event_bus()
+    baseline = len(bus._handlers)
+    attempts: list[bool] = []
+    stops: list[int] = []
+    flaky = {"remaining": 2}
+
+    class LeakyBot:
+        def __init__(self, **kwargs: object) -> None:
+            attempts.append(True)
+            self._handler_ids: list[str] = []
+
+        def start_polling(self) -> object:
+            # Mirror the real bot: register, then fail during startup.
+            self._handler_ids.append(get_event_bus().subscribe(EventType.TASK_COMPLETED, lambda event: None))
+            if flaky["remaining"] > 0:
+                flaky["remaining"] -= 1
+                raise RuntimeError("startup failed after registering")
+
+        def stop(self) -> None:
+            # Sync on the fake: the watchdog wraps it in asyncio.run, which the
+            # _RunSpy fake counts without awaiting.
+            stops.append(1)
+            for handler_id in self._handler_ids:
+                get_event_bus().unsubscribe(handler_id)
+            self._handler_ids = []
+
+    with _RunSpy() as spy:
+        _telegram_bot_watchdog(
+            LeakyBot,
+            token="t",
+            allowed_users={1},
+            admin_users=set(),
+            work_dir=None,
+            config=_config(),
+            sleep=sleeps,
+        )
+
+    assert len(attempts) == 3
+    # 2 failed attempts each wrap a cleanup stop() + 1 successful start in asyncio.run.
+    assert spy.count == 3
+    # One stop per failed attempt (the constructor-failure attempts release nothing).
+    assert len(stops) == 2
+    # Only the successful attempt's registration remains; a leaked fix would
+    # leave one handler per attempt (baseline + 3 here).
+    assert len(get_event_bus()._handlers) == baseline + 1
+    assert sleeps.calls == [5.0, 10.0]
+
+
+def test_watchdog_does_not_stop_a_bot_that_never_started() -> None:
+    """If the factory itself raises, there is no bot to release."""
+    stops: list[int] = []
+
+    def factory(**kwargs: object) -> object:
+        raise RuntimeError("constructor failed")
+
+    sleeps = _SleepRecorder()
+
+    class StopLoop(Exception):
+        pass
+
+    def aborting_sleep(seconds: float) -> None:
+        if len(sleeps.calls) >= 1:
+            raise StopLoop
+        sleeps(seconds)
+
+    with pytest.raises(StopLoop):
+        _telegram_bot_watchdog(
+            factory,
+            token="t",
+            allowed_users=set(),
+            admin_users=set(),
+            work_dir=None,
+            config=_config(),
+            sleep=aborting_sleep,
+        )
+
+    assert stops == []
+
+
 def test_watchdog_webhook_clean_return_exits_without_retry() -> None:
     sleeps = _SleepRecorder()
     attempts: list[bool] = []
