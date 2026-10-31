@@ -11,9 +11,14 @@ from typing import Any
 
 import httpx
 
-# Re-exported so existing ``models_db.DEFAULT_OUTPUT_LIMIT`` consumers keep
-# working; compaction owns the single definition.
-from .compaction import DEFAULT_OUTPUT_LIMIT
+# Re-exported so existing ``models_db.*`` consumers keep working; compaction
+# owns the single definitions of the offline context-window table and defaults.
+from .compaction import (
+    DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_OUTPUT_LIMIT,
+    MODEL_CONTEXT_WINDOWS,
+    match_builtin_context_window,
+)
 from .constants import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
@@ -25,9 +30,6 @@ MODELS_DEV_API_URL = "https://models.dev/api.json"
 
 # Cache TTL (7 days)
 DEFAULT_CACHE_TTL_DAYS = 7
-
-# Default context window for unknown models
-DEFAULT_CONTEXT_WINDOW = 200_000
 
 
 @dataclass
@@ -390,23 +392,10 @@ def delete_models_cache() -> bool:
     return False
 
 
-# Built-in fallback models (used when no cache available)
-BUILTIN_MODELS: dict[str, int] = {
-    # OpenAI
-    "gpt-5.1-codex": 400_000,
-    "gpt-5.2": 400_000,
-    "gpt-5.5": 400_000,
-    # Anthropic
-    "claude-4.5-sonnet": 200_000,
-    "claude-4.5-opus": 200_000,
-    # Google
-    "gemini-3-pro": 1_048_576,
-    # ZAI/GLM
-    "glm-4.6": 204_800,
-    "glm-4.7": 204_800,
-    # MiniMax
-    "minimax-m2.1": 204_800,
-}
+# Built-in fallback models (used when no cache is available). Alias of the
+# single source of truth in ``compaction`` so the offline table cannot drift
+# from the one used to size compaction thresholds.
+BUILTIN_MODELS: dict[str, int] = MODEL_CONTEXT_WINDOWS
 
 
 def get_context_window_from_database(
@@ -436,15 +425,11 @@ def get_context_window_from_database(
         if model:
             return model.context_window
 
-    # Check built-in fallbacks
-    if model_name in BUILTIN_MODELS:
-        return BUILTIN_MODELS[model_name]
-
-    # Try partial matching on built-in
-    model_lower = model_name.lower()
-    for known_model, window in BUILTIN_MODELS.items():
-        if known_model in model_lower or model_lower.startswith(known_model):
-            return window
+    # Built-in table (substring matching handles provider prefixes and dated
+    # snapshots such as "openai/gpt-5.5-2026-05-13").
+    builtin = match_builtin_context_window(model_name)
+    if builtin is not None:
+        return builtin
 
     # Default
     logger.debug(f"Unknown model '{model_name}', using default context window")

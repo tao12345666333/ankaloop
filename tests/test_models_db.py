@@ -148,11 +148,16 @@ class TestBuiltinModels:
         """Test that built-in models are defined."""
         # Check that some models are defined (specific models may change)
         assert len(BUILTIN_MODELS) > 0
-        # Check that known categories are represented
-        has_openai = any("gpt" in m.lower() for m in BUILTIN_MODELS)
-        has_anthropic = any("claude" in m.lower() for m in BUILTIN_MODELS)
-        has_glm = any("glm" in m.lower() for m in BUILTIN_MODELS)
-        assert has_openai or has_anthropic or has_glm, "Should have at least one major provider"
+        # Every major provider family must be represented.
+        families = ["gpt", "claude", "gemini", "deepseek", "glm", "qwen", "kimi", "minimax", "grok", "mistral"]
+        missing = [family for family in families if not any(family in m for m in BUILTIN_MODELS)]
+        assert not missing, f"missing families in the offline table: {missing}"
+
+    def test_builtin_models_shares_the_compaction_table(self):
+        """The offline table is the same object compaction thresholds use."""
+        from ankaloop.compaction import MODEL_CONTEXT_WINDOWS
+
+        assert BUILTIN_MODELS is MODEL_CONTEXT_WINDOWS
 
     def test_builtin_values_reasonable(self):
         """Test that built-in values are reasonable."""

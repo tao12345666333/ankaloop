@@ -14,23 +14,42 @@ Smart Compaction automatically manages conversation context length by:
 
 ## Model Context Windows
 
-AMCP knows the context window sizes for many popular models:
+AnkaLoop resolves context windows from [models.dev](https://models.dev) when its cache is
+available, and falls back to a built-in table otherwise. The built-in table is kept in sync with
+models.dev and is shared by the compaction thresholds and the offline model lookup, so an
+offline run sizes context exactly like an online one:
 
-| Model Family | Models | Context Window |
-|--------------|--------|----------------|
-| **GPT-4** | gpt-4 | 8,192 |
-| **GPT-4 Turbo** | gpt-4-turbo, gpt-4o, gpt-4o-mini | 128,000 |
-| **GPT-4.1** | gpt-4.1 | 1,000,000 |
-| **Claude 3** | claude-3-opus, claude-3-sonnet, claude-3.5-sonnet | 200,000 |
-| **Gemini** | gemini-1.5-pro | 2,000,000 |
-| **Gemini** | gemini-1.5-flash, gemini-2.0-flash | 1,000,000 |
-| **DeepSeek** | deepseek-v3, deepseek-chat, deepseek-reasoner | 64,000 |
-| **Qwen** | qwen-2.5, qwen-max | 128,000 |
-| **GLM** | glm-4, glm-4.6 | 128,000 |
-| **Mistral** | mistral-large | 128,000 |
-| **LLaMA** | llama-3.1-405b, llama-3.2 | 128,000 |
+| Model family | Representative models | Context window |
+|--------------|-----------------------|----------------|
+| **OpenAI GPT-5** | gpt-5, gpt-5.1, gpt-5.2, gpt-5.3-codex | 400,000 |
+| **OpenAI GPT-5.4+** | gpt-5.4, gpt-5.4-pro, gpt-5.5, gpt-5.6 | 1,050,000 |
+| **OpenAI legacy** | gpt-4.1 | 1,047,576 |
+| **OpenAI legacy** | gpt-4o | 128,000 |
+| **Anthropic Claude 4.5** | claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5 | 200,000 |
+| **Anthropic Claude 4.6+ / 5.x** | claude-opus-4-6 … claude-opus-5, claude-sonnet-5 | 1,000,000 |
+| **Google Gemini** | gemini-2.5-pro, gemini-3.1-pro, gemini-3.7-flash, gemini-4-argon | 1,048,576 |
+| **Google Gemma** | gemma-4 | 262,144 |
+| **DeepSeek** | deepseek-v4-flash, deepseek-v4-pro | 1,048,576 |
+| **DeepSeek legacy** | deepseek-chat, deepseek-reasoner | 128,000 |
+| **ZAI/GLM** | glm-4.6, glm-4.7, glm-5, glm-5.1 | ~200,000 |
+| **ZAI/GLM** | glm-5.2, glm-5.3 | 1,000,000 |
+| **Alibaba Qwen** | qwen3-max, qwen3-coder | 262,144 |
+| **Alibaba Qwen** | qwen3.5-plus/flash, qwen3.6-plus/flash, qwen3.7/3.8 max-plus-flash | 1,000,000 |
+| **Moonshot Kimi** | kimi-k2 | 262,144 |
+| **Moonshot Kimi** | kimi-k3 | 1,048,576 |
+| **MiniMax** | minimax-m2 | 204,800 |
+| **MiniMax** | minimax-m3 | 1,000,000 |
+| **xAI Grok** | grok-4 | 256,000 |
+| **xAI Grok** | grok-4.5, grok-4.6, grok-4.7 | 500,000 |
+| **xAI Grok** | grok-4.3, grok-4.20 | 1,000,000 |
+| **Mistral** | mistral-small, mistral-large | 128,000 |
+| **Mistral** | mistral-medium, devstral, ministral | 262,144 |
+| **Mistral** | mistral-large-4 | 1,048,576 |
 
-For unknown models, a default of 32,000 tokens is used.
+Models missing from both the cache and the table fall back to a per-family heuristic, and finally
+to a 200,000-token default. Because an over-estimate makes compaction fire late (surfacing as a
+provider-side request rejection), set `context_window` in `[chat.model_config]` when a gateway
+serves a narrower window than the upstream API.
 
 ## How It Works
 
@@ -41,15 +60,15 @@ The SmartCompactor calculates thresholds based on the model's context window:
 ```python
 from amcp import SmartCompactor
 
-# For gpt-4-turbo (128K context):
-compactor = SmartCompactor(client, model="gpt-4-turbo")
-# threshold = 80,640 tokens (70% of available context)
-# target = 34,560 tokens (30% after compaction)
+# For claude-sonnet-4-5 (200K context):
+compactor = SmartCompactor(client, model="claude-sonnet-4-5")
+# threshold = 126,000 tokens (70% of available context)
+# target = 54,000 tokens (30% after compaction)
 
-# For gpt-4 (8K context):
-compactor = SmartCompactor(client, model="gpt-4")
-# threshold = 5,160 tokens
-# target = 2,211 tokens
+# For gpt-5.5 (1.05M context):
+compactor = SmartCompactor(client, model="gpt-5.5")
+# threshold = 661,500 tokens
+# target = 283,500 tokens
 ```
 
 ### Configuration
@@ -70,7 +89,7 @@ config = CompactionConfig(
     safety_margin=0.1,    # 10% margin for response generation
 )
 
-compactor = SmartCompactor(client, model="gpt-4-turbo", config=config)
+compactor = SmartCompactor(client, model="gpt-5.5", config=config)
 ```
 
 ## Compaction Strategies
@@ -143,11 +162,11 @@ config = CompactionConfig(strategy=CompactionStrategy.HYBRID)
 from amcp import SmartCompactor, get_model_context_window
 
 # Check model's context window
-window = get_model_context_window("gpt-4-turbo")
+window = get_model_context_window("gpt-5.5")
 print(f"Context window: {window:,} tokens")
 
 # Create compactor
-compactor = SmartCompactor(client, model="gpt-4-turbo")
+compactor = SmartCompactor(client, model="gpt-5.5")
 
 # Check if compaction is needed
 if compactor.should_compact(messages):
@@ -174,7 +193,7 @@ from amcp import create_compactor
 # Quick creation with custom settings
 compactor = create_compactor(
     client,
-    model="gpt-4-turbo",
+    model="gpt-5.5",
     strategy="hybrid",
     threshold_ratio=0.8,
     target_ratio=0.4,
@@ -242,7 +261,7 @@ The SmartCompactor is integrated into the Agent class and is used automatically 
 
 ```toml
 [chat]
-model = "gpt-4-turbo"
+model = "gpt-5.5"
 # Compaction is automatic based on model's context window
 ```
 

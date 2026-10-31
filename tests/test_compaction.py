@@ -36,42 +36,58 @@ class TestGetModelContextWindow:
 
     def test_claude_family(self):
         """Test Claude models have large context windows."""
-        # Claude 3.5 Sonnet should have substantial context
-        claude = get_model_context_window("claude-3.5-sonnet")
-        assert claude >= 80_000  # At least 80K
+        claude = get_model_context_window("claude-sonnet-4-5")
+        assert claude >= 200_000
 
-        # Pattern matching for Claude
-        claude_opus = get_model_context_window("claude-3-opus-20240229")
-        assert claude_opus >= 80_000
+        # Current-generation Claude models carry a 1M window.
+        claude_opus = get_model_context_window("claude-opus-5-5")
+        assert claude_opus >= 1_000_000
 
     def test_gemini_family(self):
         """Test Gemini models have large context windows."""
-        gemini = get_model_context_window("gemini-1.5-pro")
-        assert gemini >= 500_000  # At least 500K
+        gemini = get_model_context_window("gemini-2.5-pro")
+        assert gemini >= 1_000_000
 
     def test_partial_match_gpt55(self):
         """Test partial matching for GPT-5.5 models."""
         result = get_model_context_window("gpt-5.5-2026-05-13")
-        assert result >= 200_000
+        assert result >= 1_000_000
+
+    def test_provider_prefixed_model_name(self):
+        """Gateway-style ids such as ``openai/gpt-5.5`` resolve to the family entry."""
+        with patch("ankaloop.models_db.load_models_cache", return_value=None):
+            assert get_model_context_window("openai/gpt-5.5") == 1_050_000
 
     def test_deepseek_model(self):
         """Test DeepSeek model detection."""
-        deepseek_chat = get_model_context_window("deepseek-chat")
-        assert deepseek_chat >= 64_000  # At least 64K
+        # Current DeepSeek generation ships a 1M window.
+        assert get_model_context_window("deepseek-v4-flash") >= 1_000_000
+        # Unknown DeepSeek variants fall back to the family heuristic.
+        assert get_model_context_window("deepseek-chat") >= 128_000
 
     def test_qwen_model(self):
         """Test Qwen model detection."""
-        qwen = get_model_context_window("qwen-2.5")
-        # Could be from cache or pattern matching
-        assert qwen >= 32_000  # At least 32K
+        qwen = get_model_context_window("qwen3.7-max")
+        assert qwen >= 1_000_000
+        # Unlisted generations keep a 128K floor instead of the old 32K.
+        assert get_model_context_window("qwen-2.5") >= 128_000
 
     def test_glm_model(self):
         """Test GLM model detection."""
-        glm4 = get_model_context_window("glm-4")
-        assert glm4 >= 100_000  # GLM-4 should be 100K+
-
         glm46 = get_model_context_window("glm-4.6")
-        assert glm46 >= 100_000  # GLM-4.6 should also be 100K+
+        assert glm46 >= 200_000
+
+        # GLM-5.2 and newer widened the window to 1M.
+        assert get_model_context_window("glm-5.3") >= 1_000_000
+
+    def test_offline_table_matches_no_cache_lookup(self):
+        """The built-in table and the offline DB lookup agree for known models."""
+        with patch("ankaloop.models_db.load_models_cache", return_value=None):
+            assert get_model_context_window("gpt-5.5") == 1_050_000
+            assert get_model_context_window("claude-sonnet-4-5") == 200_000
+            assert get_model_context_window("gemini-2.5-pro") == 1_048_576
+            assert get_model_context_window("glm-4.6") == 204_800
+            assert get_model_context_window("minimax-m2.1") == 204_800
 
     def test_unknown_model_returns_default(self):
         """Test unknown model returns default window."""

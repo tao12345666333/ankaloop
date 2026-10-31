@@ -14,17 +14,19 @@ Key Features:
 - Configurable safety margins
 
 Built-in Fallback Models (when models.dev unavailable):
-- OpenAI: GPT-5.1 Codex (400K), GPT-5.2 (400K), GPT-5.5 (400K)
-- Anthropic: Claude 4.5 Sonnet (200K), Claude 4.5 Opus (200K)
-- Google: Gemini 3 Pro (1M)
-- ZAI/GLM: GLM-4.6 (204K), GLM-4.7 (204K)
-- MiniMax: MiniMax M2.1 (204K)
+- OpenAI: GPT-5 family (400K), GPT-5.4+ (1.05M)
+- Anthropic: Claude 4.5 (200K), Claude 4.6+ / 5.x (1M)
+- Google: Gemini (1M), Gemma 4 (262K)
+- DeepSeek: DeepSeek-V4 (1M)
+- ZAI/GLM: GLM-4.6/4.7/5/5.1 (200K), GLM-5.2+ (1M)
+- Alibaba/Qwen: Qwen3-Max/Coder (262K), Qwen3.5+ (1M)
+- Moonshot: Kimi K3 (1M), MiniMax: M3 (1M)
 
 Example:
     from ankaloop.compaction import SmartCompactor, get_model_context_window
 
     # Get context window for model
-    ctx_window = get_model_context_window("gpt-5.5")  # 400000
+    ctx_window = get_model_context_window("gpt-5.5")  # 1050000
 
     # Create compactor
     compactor = SmartCompactor(client, model="gpt-5.5")
@@ -48,24 +50,111 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Model context window sizes (in tokens) - Built-in fallback models
-# Used when models.dev database is unavailable
+# Model context window sizes (in tokens) - Built-in fallback models.
+#
+# Used when the models.dev cache is unavailable (offline first run, failed
+# fetch, `models_db` import error). Values mirror models.dev so an offline
+# lookup resolves to the same window as an online one; a per-model
+# ``model_config.context_window`` override remains the escape hatch for
+# gateways that serve a narrower window than the upstream API.
+#
+# Keys are matched as lowercase substrings, so provider prefixes
+# ("openai/gpt-5.5") and dated snapshots ("gpt-5.5-2026-05-13") resolve too.
+# Longer keys are tried first, which keeps "gpt-5.4-mini" from being answered
+# by "gpt-5.4".
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # OpenAI
-    "gpt-5.1-codex": 400_000,
+    "gpt-5.4-mini": 400_000,
+    "gpt-5.4-nano": 400_000,
+    "gpt-5.4-pro": 1_050_000,
+    "gpt-5.5-pro": 1_050_000,
+    "gpt-5.3-codex": 400_000,
+    "gpt-5.4": 1_050_000,
+    "gpt-5.5": 1_050_000,
+    "gpt-5.6": 1_050_000,
+    "gpt-5.1": 400_000,
     "gpt-5.2": 400_000,
-    "gpt-5.5": 400_000,
+    "gpt-5": 400_000,
+    "gpt-oss": 131_072,
+    "gpt-4.1": 1_047_576,
+    "gpt-4o": 128_000,
     # Anthropic
-    "claude-4.5-sonnet": 200_000,
-    "claude-4.5-opus": 200_000,
+    "claude-opus-4-5": 200_000,
+    "claude-sonnet-4-5": 200_000,
+    "claude-haiku-4-5": 200_000,
+    "claude-opus-4": 200_000,
+    "claude-sonnet-4": 200_000,
+    "claude-opus-4-6": 1_000_000,
+    "claude-opus-4-7": 1_000_000,
+    "claude-opus-4-8": 1_000_000,
+    "claude-sonnet-4-6": 1_000_000,
+    "claude-opus-5": 1_000_000,
+    "claude-sonnet-5": 1_000_000,
+    "claude-haiku-5": 1_000_000,
     # Google
-    "gemini-3-pro": 1_048_576,
+    "gemini-4-argon": 1_048_576,
+    "gemini-3.1-pro": 1_048_576,
+    "gemini-3.7-flash": 1_048_576,
+    "gemini-2.5-pro": 1_048_576,
+    "gemini-2.5-flash": 1_048_576,
+    "gemma-4": 262_144,
+    # DeepSeek
+    "deepseek-v4-flash": 1_048_576,
+    "deepseek-v4-pro": 1_048_576,
+    "deepseek-v4": 1_048_576,
+    "deepseek-chat": 128_000,
+    "deepseek-reasoner": 128_000,
     # ZAI/GLM
+    "glm-5.2": 1_000_000,
+    "glm-5.3": 1_000_000,
+    "glm-5.1": 200_000,
+    "glm-5": 204_800,
     "glm-4.6": 204_800,
     "glm-4.7": 204_800,
+    # Alibaba/Qwen
+    "qwen3-coder": 262_144,
+    "qwen3-max": 262_144,
+    "qwen3.5-plus": 1_000_000,
+    "qwen3.5-flash": 1_000_000,
+    "qwen3.6-plus": 1_000_000,
+    "qwen3.6-flash": 1_000_000,
+    "qwen3.7-max": 1_000_000,
+    "qwen3.7-plus": 1_000_000,
+    "qwen3.7-flash": 1_000_000,
+    "qwen3.8-max": 1_000_000,
+    "qwen3.8-plus": 1_000_000,
+    "qwen3.8-flash": 1_000_000,
+    "qwen3.5": 262_144,
+    "qwen3.6": 262_144,
+    "qwen-max": 32_768,
+    # Moonshot/Kimi
+    "kimi-k3": 1_048_576,
+    "kimi-k2": 262_144,
     # MiniMax
-    "minimax-m2.1": 204_800,
+    "minimax-m3": 1_000_000,
+    "minimax-m2": 204_800,
+    # xAI
+    "grok-4.20": 1_000_000,
+    "grok-4.3": 1_000_000,
+    "grok-4.5": 500_000,
+    "grok-4.6": 500_000,
+    "grok-4.7": 500_000,
+    "grok-4": 256_000,
+    # Mistral
+    "mistral-large-4": 1_048_576,
+    "mistral-large": 262_144,
+    "mistral-medium": 262_144,
+    "mistral-small-2603": 262_144,
+    "mistral-small": 128_000,
+    "codestral": 256_000,
+    "devstral": 262_144,
+    "ministral-3b": 131_072,
+    "ministral": 262_144,
 }
+
+# Longest key first so a specific entry always wins over a shorter prefix
+# ("gpt-5.4-mini" before "gpt-5.4", "glm-5.1" before "glm-5").
+_MODEL_KEYS_BY_LENGTH: tuple[str, ...] = tuple(sorted(MODEL_CONTEXT_WINDOWS, key=len, reverse=True))
 
 # Default context window for unknown models
 DEFAULT_CONTEXT_WINDOW = 200_000
@@ -75,6 +164,20 @@ DEFAULT_CONTEXT_WINDOW = 200_000
 # that unknown models send no explicit cap. Single source of truth; models_db
 # re-exports it.
 DEFAULT_OUTPUT_LIMIT = 32768
+
+
+def match_builtin_context_window(model: str) -> int | None:
+    """Resolve a context window from the built-in table, or ``None``.
+
+    Unlike :func:`get_model_context_window` this never falls back to a family
+    heuristic or the default, so callers can tell "the table knows this model"
+    apart from "nothing matched".
+    """
+    model_lower = model.lower()
+    for known_model in _MODEL_KEYS_BY_LENGTH:
+        if known_model in model_lower:
+            return MODEL_CONTEXT_WINDOWS[known_model]
+    return None
 
 
 class CompactionStrategy(Enum):
@@ -208,8 +311,8 @@ def get_model_context_window(
     1. User-provided ``model_config.context_window`` override (highest priority)
     2. Models database cache (from models.dev), using ``model_config.provider_id``
        when available for more accurate lookup
-    3. Built-in MODEL_CONTEXT_WINDOWS dictionary
-    4. Pattern-based heuristics
+    3. Built-in ``MODEL_CONTEXT_WINDOWS`` dictionary (substring match)
+    4. Pattern-based family heuristics
     5. Default fallback
 
     Args:
@@ -239,39 +342,35 @@ def get_model_context_window(
     except Exception as e:
         logger.debug(f"Failed to get context window from database: {e}")
 
-    # Exact match in built-in
-    if model in MODEL_CONTEXT_WINDOWS:
-        return MODEL_CONTEXT_WINDOWS[model]
+    # Built-in table, with substring matching for provider prefixes and
+    # dated snapshots (e.g. "gpt-5.5-2026-05-13" -> "gpt-5.5").
+    builtin = match_builtin_context_window(model)
+    if builtin is not None:
+        return builtin
 
-    # Try partial matching (e.g., "gpt-5.5-2026-05-13" -> "gpt-5.5")
-    # Sort by length (longest first) to prefer more specific matches
+    # Last-resort family heuristics for models newer than the built-in table.
+    # These track the current generation of each family rather than the
+    # window it had when the heuristic was written; an over-estimate makes
+    # compaction fire late, so they stay on the conservative side of each
+    # family's most common value.
     model_lower = model.lower()
-    sorted_models = sorted(MODEL_CONTEXT_WINDOWS.keys(), key=len, reverse=True)
-    for known_model in sorted_models:
-        if known_model in model_lower or model_lower.startswith(known_model):
-            return MODEL_CONTEXT_WINDOWS[known_model]
-
-    # Check for common patterns
-    if "gpt-5" in model_lower:
-        return 400_000
-
-    if "claude" in model_lower:
-        return 200_000
-
-    if "gemini" in model_lower:
-        return 1_000_000
-
-    if "deepseek" in model_lower:
-        return 64_000
-
-    if "qwen" in model_lower or "glm" in model_lower:
-        return 128_000
-
-    if "mistral" in model_lower or "mixtral" in model_lower:
-        return 32_000
-
-    if "llama" in model_lower:
-        return 128_000
+    for family, window in (
+        ("gemini", 1_000_000),
+        ("claude", 200_000),
+        ("gpt-5", 400_000),
+        ("gpt-4.1", 1_000_000),
+        ("grok", 256_000),
+        ("kimi", 262_144),
+        ("minimax", 204_800),
+        ("deepseek", 128_000),
+        ("glm", 200_000),
+        ("qwen", 131_072),
+        ("llama", 128_000),
+        ("mistral", 128_000),
+        ("mixtral", 128_000),
+    ):
+        if family in model_lower:
+            return window
 
     logger.warning(f"Unknown model '{model}', using default context window of {DEFAULT_CONTEXT_WINDOW}")
     return DEFAULT_CONTEXT_WINDOW
