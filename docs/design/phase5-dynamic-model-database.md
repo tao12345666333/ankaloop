@@ -87,13 +87,13 @@ When `is_custom = true`, AMCP uses the specified `context_window` directly inste
 
 ## Context Window Resolution
 
-AMCP resolves context window sizes in the following priority order:
+AnkaLoop resolves context window sizes in the following priority order:
 
 1. **User-specified override** in config (`context_window` in `[chat.model_config]`)
 2. **Models database cache** (from models.dev)
-3. **Built-in fallback list** (~20 common models)
-4. **Pattern-based heuristics** (e.g., "claude" → 200K)
-5. **Default fallback**: 32,000 tokens
+3. **Built-in fallback table** (`MODEL_CONTEXT_WINDOWS` in `compaction.py`, mirrored on models.dev)
+4. **Pattern-based family heuristics** (e.g., "claude" → 200K)
+5. **Default fallback**: 200,000 tokens
 
 ## Programmatic Usage
 
@@ -199,9 +199,9 @@ if not is_cache_valid(ttl_days=7):
 AMCP works fully offline using:
 
 1. **Cached database** (if previously fetched)
-2. **Built-in model list** (~20 popular models)
+2. **Built-in model table** (current generation of every major family)
 3. **Pattern matching** for common model families
-4. **32K default** for unknown models
+4. **200K default** for unknown models
 
 ## Best Practices
 
@@ -214,5 +214,5 @@ AMCP works fully offline using:
 
 - **Network failures**: Falls back to cached data or built-in values
 - **Invalid cache**: Automatically re-fetches from API
-- **Unknown models**: Uses pattern matching or defaults to 32K
+- **Unknown models**: Uses pattern matching and finally defaults to 200K
 - **API rate limits**: Cache reduces API calls to ~once per week
