@@ -15,41 +15,36 @@ Smart Compaction automatically manages conversation context length by:
 ## Model Context Windows
 
 AnkaLoop resolves context windows from [models.dev](https://models.dev) when its cache is
-available, and falls back to a built-in table otherwise. The built-in table is kept in sync with
-models.dev and is shared by the compaction thresholds and the offline model lookup, so an
-offline run sizes context exactly like an online one:
+available, and falls back to a built-in table otherwise. The table is shared by the compaction
+thresholds and the offline model lookup, so both agree on the same model.
 
-| Model family | Representative models | Context window |
+The table pins only the current generation of each family, from the oldest release still worth
+answering for; older releases and families without an entry are left to the models.dev cache and
+then to a per-family heuristic, rather than being frozen at a number that goes stale:
+
+| Model family | Oldest pinned release | Context window |
 |--------------|-----------------------|----------------|
-| **OpenAI GPT-5** | gpt-5, gpt-5.1, gpt-5.2, gpt-5.3-codex | 400,000 |
-| **OpenAI GPT-5.4+** | gpt-5.4, gpt-5.4-pro, gpt-5.5, gpt-5.6 | 1,050,000 |
-| **OpenAI legacy** | gpt-4.1 | 1,047,576 |
-| **OpenAI legacy** | gpt-4o | 128,000 |
-| **Anthropic Claude 4.5** | claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5 | 200,000 |
-| **Anthropic Claude 4.6+ / 5.x** | claude-opus-4-6 … claude-opus-5, claude-sonnet-5 | 1,000,000 |
-| **Google Gemini** | gemini-2.5-pro, gemini-3.1-pro, gemini-3.7-flash, gemini-4-argon | 1,048,576 |
-| **Google Gemma** | gemma-4 | 262,144 |
-| **DeepSeek** | deepseek-v4-flash, deepseek-v4-pro | 1,048,576 |
-| **DeepSeek legacy** | deepseek-chat, deepseek-reasoner | 128,000 |
-| **ZAI/GLM** | glm-4.6, glm-4.7, glm-5, glm-5.1 | ~200,000 |
-| **ZAI/GLM** | glm-5.2, glm-5.3 | 1,000,000 |
-| **Alibaba Qwen** | qwen3-max, qwen3-coder | 262,144 |
-| **Alibaba Qwen** | qwen3.5-plus/flash, qwen3.6-plus/flash, qwen3.7/3.8 max-plus-flash | 1,000,000 |
-| **Moonshot Kimi** | kimi-k2 | 262,144 |
+| **OpenAI GPT** | gpt-5.5 (also covers gpt-5.6 and gpt-6) | 1,050,000 |
+| **Anthropic Claude** | claude-opus-5, claude-sonnet-5, claude-haiku-5, claude-fable-5 | 1,000,000 |
+| **Google Gemini** | gemini-3.7 (also covers 3.8 and 4.x) | 1,048,576 |
+| **DeepSeek** | deepseek-v4 (also covers v4-flash / v4-pro) | 1,048,576 |
+| **ZAI/GLM** | glm-5.2 (also covers glm-5.3) | 1,000,000 |
 | **Moonshot Kimi** | kimi-k3 | 1,048,576 |
-| **MiniMax** | minimax-m2 | 204,800 |
-| **MiniMax** | minimax-m3 | 1,000,000 |
-| **xAI Grok** | grok-4 | 256,000 |
-| **xAI Grok** | grok-4.5, grok-4.6, grok-4.7 | 500,000 |
+| **MiniMax** | minimax-m3 (also covers m3.1) | 1,000,000 |
 | **xAI Grok** | grok-4.3, grok-4.20 | 1,000,000 |
-| **Mistral** | mistral-small, mistral-large | 128,000 |
-| **Mistral** | mistral-medium, devstral, ministral | 262,144 |
-| **Mistral** | mistral-large-4 | 1,048,576 |
+| **xAI Grok** | grok-4.5, grok-4.6, grok-4.7 | 500,000 |
 
-Models missing from both the cache and the table fall back to a per-family heuristic, and finally
-to a 200,000-token default. Because an over-estimate makes compaction fire late (surfacing as a
-provider-side request rejection), set `context_window` in `[chat.model_config]` when a gateway
-serves a narrower window than the upstream API.
+A table entry answers a model only when the model carries the same version segment as the key, so
+a current-generation entry is never borrowed by an older release: `claude-opus-5` answers
+`anthropic/claude-opus-5-5` but not `claude-opus-4-5`, and `gemini-4` answers `gemini-4-argon` but
+not `gemini-2.5-pro`. Newer point releases of a pinned family inherit its window (`gpt-6.1-sol`,
+`kimi-k3.1-pro`).
+
+Models missing from both the cache and the table fall back to a per-family heuristic (for example
+Claude 4.x → 200K, Qwen → 128K, Mistral → 128K), and finally to a 200,000-token default. Because
+an over-estimate makes compaction fire late (surfacing as a provider-side request rejection), set
+`context_window` in `[chat.model_config]` when a gateway serves a narrower window than the
+upstream API.
 
 ## How It Works
 

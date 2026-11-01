@@ -12,13 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Offline context-window table refreshed and de-duplicated**: the built-in fallback list was
   a snapshot of the 2025 model lineup (GPT-5.1/5.2 at 400K, Claude 4.5 at 200K, DeepSeek at
   64K, Qwen/GLM at 128K), so an offline run — or any model the models.dev cache did not know —
-  sized compaction against windows that were several generations stale. Models were also capped
-  far below their real capacity, and requests were rejected by providers for exceeding limits
-  the agent believed were smaller than they are. The table now mirrors models.dev for the
-  current generation of OpenAI, Anthropic, Google, DeepSeek, ZAI/GLM, Alibaba/Qwen,
-  Moonshot/Kimi, MiniMax, xAI, and Mistral, matching is case-insensitive so provider prefixes
-  (`openai/gpt-5.5`) and dated snapshots resolve, and the family heuristics for models newer
-  than the table were raised to current values instead of the 32K–128K ones they had carried.
+  sized compaction against windows that were several generations stale, and models were capped
+  far below their real capacity. The table now pins the current generation of OpenAI (GPT-5.5+),
+  Anthropic (Claude 5+), Google (Gemini 3.7+), DeepSeek (V4+), ZAI/GLM (5.2+), Moonshot (Kimi
+  K3+), MiniMax (M3+) and xAI (Grok 4.x). Releases older than those floors and families without
+  an entry (Mistral, Qwen) are left to the models.dev cache and the family heuristics instead of
+  being frozen at a number here. Matching is case-insensitive and substring-based, so provider
+  prefixes (`openai/gpt-5.5`) and dated snapshots resolve, and an entry only answers a model
+  with the same version segment, so a current-generation entry is never borrowed by an older
+  release (`claude-opus-5` does not answer `claude-opus-4-5`).
 - **`models_db.BUILTIN_MODELS` is now the same table as `compaction.MODEL_CONTEXT_WINDOWS`**
   instead of a hand-copied duplicate. The two had already drifted apart, so an offline lookup
   and the compaction threshold could disagree about the same model. `DEFAULT_CONTEXT_WINDOW`

@@ -15,6 +15,7 @@ from ankaloop.compaction import (
     estimate_tokens,
     get_model_context_window,
     get_model_output_limit,
+    match_builtin_context_window,
     resolve_model_output_limit,
 )
 
@@ -66,28 +67,56 @@ class TestGetModelContextWindow:
         assert get_model_context_window("deepseek-chat") >= 128_000
 
     def test_qwen_model(self):
-        """Test Qwen model detection."""
+        """Qwen has no curated table entry and keeps the family heuristic."""
         qwen = get_model_context_window("qwen3.7-max")
-        assert qwen >= 1_000_000
-        # Unlisted generations keep a 128K floor instead of the old 32K.
-        assert get_model_context_window("qwen-2.5") >= 128_000
+        # Conservative side of the family: an over-estimate compacts late.
+        assert qwen >= 128_000
+        assert qwen < 1_000_000
 
     def test_glm_model(self):
         """Test GLM model detection."""
-        glm46 = get_model_context_window("glm-4.6")
-        assert glm46 >= 200_000
-
-        # GLM-5.2 and newer widened the window to 1M.
+        # GLM-5.2 is the oldest generation the table pins, at a 1M window.
+        assert get_model_context_window("glm-5.2") >= 1_000_000
         assert get_model_context_window("glm-5.3") >= 1_000_000
+        # Older GLM releases fall back to the family heuristic.
+        assert get_model_context_window("glm-4.6") >= 128_000
 
     def test_offline_table_matches_no_cache_lookup(self):
         """The built-in table and the offline DB lookup agree for known models."""
         with patch("ankaloop.models_db.load_models_cache", return_value=None):
             assert get_model_context_window("gpt-5.5") == 1_050_000
-            assert get_model_context_window("claude-sonnet-4-5") == 200_000
-            assert get_model_context_window("gemini-2.5-pro") == 1_048_576
-            assert get_model_context_window("glm-4.6") == 204_800
-            assert get_model_context_window("minimax-m2.1") == 204_800
+            assert get_model_context_window("claude-opus-5-5") == 1_000_000
+            assert get_model_context_window("gemini-3.8-flash") == 1_048_576
+            assert get_model_context_window("deepseek-v4-flash") == 1_048_576
+            assert get_model_context_window("glm-5.2") == 1_000_000
+            assert get_model_context_window("minimax-m3") == 1_000_000
+
+    def test_table_only_pins_the_current_generation(self):
+        """Releases older than each family's floor are left to the heuristics.
+
+        A key must not be borrowed by an older version of the same family:
+        ``claude-opus-5`` would otherwise answer ``claude-opus-4-5`` with a 1M
+        window five times larger than the real one.
+        """
+        with patch("ankaloop.models_db.load_models_cache", return_value=None):
+            assert match_builtin_context_window("claude-opus-4-5") is None
+            assert match_builtin_context_window("gemini-2.5-pro") is None
+            assert match_builtin_context_window("gpt-5.4") is None
+            assert match_builtin_context_window("glm-5.1") is None
+            assert match_builtin_context_window("qwen3.8-max") is None
+            assert match_builtin_context_window("mistral-large-4") is None
+
+            # Claude 4.x is answered by the conservative family heuristic.
+            assert get_model_context_window("claude-opus-4-5") == 200_000
+
+    def test_table_resolves_newer_releases_of_a_pinned_family(self):
+        """Newer point releases of a pinned family inherit its window."""
+        with patch("ankaloop.models_db.load_models_cache", return_value=None):
+            assert get_model_context_window("gpt-6.1-sol") == 1_050_000
+            assert get_model_context_window("gpt-5.5-pro") == 1_050_000
+            assert get_model_context_window("claude-fable-5-1") == 1_000_000
+            assert get_model_context_window("kimi-k3.1-pro") == 1_048_576
+            assert get_model_context_window("minimax/MiniMax-M3.1-Flash") == 1_000_000
 
     def test_unknown_model_returns_default(self):
         """Test unknown model returns default window."""

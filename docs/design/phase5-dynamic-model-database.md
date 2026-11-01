@@ -91,8 +91,9 @@ AnkaLoop resolves context window sizes in the following priority order:
 
 1. **User-specified override** in config (`context_window` in `[chat.model_config]`)
 2. **Models database cache** (from models.dev)
-3. **Built-in fallback table** (`MODEL_CONTEXT_WINDOWS` in `compaction.py`, mirrored on models.dev)
-4. **Pattern-based family heuristics** (e.g., "claude" → 200K)
+3. **Built-in fallback table** (`MODEL_CONTEXT_WINDOWS` in `compaction.py`): the current generation
+   of each major family, matched by version segment so an entry never answers an older release
+4. **Pattern-based family heuristics** for everything else (e.g., "claude" → 200K, "qwen" → 128K)
 5. **Default fallback**: 200,000 tokens
 
 ## Programmatic Usage
@@ -199,8 +200,8 @@ if not is_cache_valid(ttl_days=7):
 AMCP works fully offline using:
 
 1. **Cached database** (if previously fetched)
-2. **Built-in model table** (current generation of every major family)
-3. **Pattern matching** for common model families
+2. **Built-in model table** (current generation of the pinned families, see above)
+3. **Pattern matching** for common model families, including Qwen and Mistral
 4. **200K default** for unknown models
 
 ## Best Practices

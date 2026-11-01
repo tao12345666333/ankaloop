@@ -14,13 +14,16 @@ Key Features:
 - Configurable safety margins
 
 Built-in Fallback Models (when models.dev unavailable):
-- OpenAI: GPT-5 family (400K), GPT-5.4+ (1.05M)
-- Anthropic: Claude 4.5 (200K), Claude 4.6+ / 5.x (1M)
-- Google: Gemini (1M), Gemma 4 (262K)
-- DeepSeek: DeepSeek-V4 (1M)
-- ZAI/GLM: GLM-4.6/4.7/5/5.1 (200K), GLM-5.2+ (1M)
-- Alibaba/Qwen: Qwen3-Max/Coder (262K), Qwen3.5+ (1M)
-- Moonshot: Kimi K3 (1M), MiniMax: M3 (1M)
+- OpenAI: GPT-5.5+ / GPT-6 (1.05M)
+- Anthropic: Claude 5.x (1M)
+- Google: Gemini 3.7+ (1M)
+- DeepSeek: DeepSeek-V4+ (1M)
+- ZAI/GLM: GLM-5.2+ (1M)
+- Moonshot: Kimi K3+ (1M), MiniMax: M3+ (1M)
+- xAI: Grok 4.3+ (1M), Grok 4.5-4.7 (500K)
+
+Older releases and families without a curated entry (Mistral, Qwen) fall back
+to the models.dev cache, then a per-family heuristic.
 
 Example:
     from ankaloop.compaction import SmartCompactor, get_model_context_window
@@ -40,6 +43,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -58,103 +62,56 @@ logger = logging.getLogger(__name__)
 # ``model_config.context_window`` override remains the escape hatch for
 # gateways that serve a narrower window than the upstream API.
 #
+# Only the current generation of each family is listed, from the oldest
+# release still worth answering for: GPT-5.5+, Claude 5+, Gemini 3.7+,
+# GLM-5.2+, DeepSeek-V4+, MiniMax-M3+, Kimi-K3+ and Grok-4.x. Older models,
+# and families without a curated entry (Mistral, Qwen), are left to the cache
+# and the heuristics below instead of being pinned to a stale number here.
+#
 # Keys are matched as lowercase substrings, so provider prefixes
 # ("openai/gpt-5.5") and dated snapshots ("gpt-5.5-2026-05-13") resolve too.
-# Longer keys are tried first, which keeps "gpt-5.4-mini" from being answered
-# by "gpt-5.4".
+# Longer keys are tried first, which keeps "gpt-5.5-pro" from being answered
+# by "gpt-5.5".
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    # OpenAI
-    "gpt-5.4-mini": 400_000,
-    "gpt-5.4-nano": 400_000,
-    "gpt-5.4-pro": 1_050_000,
-    "gpt-5.5-pro": 1_050_000,
-    "gpt-5.3-codex": 400_000,
-    "gpt-5.4": 1_050_000,
+    # OpenAI. Every GPT-5.5+ model ships a 1.05M window, including the GPT-6
+    # generation; "gpt-5.5" also covers "gpt-5.5-pro" and dated snapshots.
     "gpt-5.5": 1_050_000,
     "gpt-5.6": 1_050_000,
-    "gpt-5.1": 400_000,
-    "gpt-5.2": 400_000,
-    "gpt-5": 400_000,
-    "gpt-oss": 131_072,
-    "gpt-4.1": 1_047_576,
-    "gpt-4o": 128_000,
-    # Anthropic
-    "claude-opus-4-5": 200_000,
-    "claude-sonnet-4-5": 200_000,
-    "claude-haiku-4-5": 200_000,
-    "claude-opus-4": 200_000,
-    "claude-sonnet-4": 200_000,
-    "claude-opus-4-6": 1_000_000,
-    "claude-opus-4-7": 1_000_000,
-    "claude-opus-4-8": 1_000_000,
-    "claude-sonnet-4-6": 1_000_000,
+    "gpt-6": 1_050_000,
+    # Anthropic. Claude 4.x stays out of the table; the heuristic answers it.
     "claude-opus-5": 1_000_000,
     "claude-sonnet-5": 1_000_000,
     "claude-haiku-5": 1_000_000,
-    # Google
-    "gemini-4-argon": 1_048_576,
-    "gemini-3.1-pro": 1_048_576,
-    "gemini-3.7-flash": 1_048_576,
-    "gemini-2.5-pro": 1_048_576,
-    "gemini-2.5-flash": 1_048_576,
-    "gemma-4": 262_144,
-    # DeepSeek
-    "deepseek-v4-flash": 1_048_576,
-    "deepseek-v4-pro": 1_048_576,
+    "claude-fable-5": 1_000_000,
+    "claude-mythos-5": 1_000_000,
+    # Google. Gemini 3.7 is the oldest generation listed; every later release
+    # (3.8, 4.x) keeps the 1M window.
+    "gemini-3.7": 1_048_576,
+    "gemini-3.8": 1_048_576,
+    "gemini-4": 1_048_576,
+    # DeepSeek. V4 and its flash/pro variants share a 1M window.
     "deepseek-v4": 1_048_576,
-    "deepseek-chat": 128_000,
-    "deepseek-reasoner": 128_000,
-    # ZAI/GLM
+    # ZAI/GLM. GLM-5.2 widened the window to 1M and later releases kept it.
     "glm-5.2": 1_000_000,
     "glm-5.3": 1_000_000,
-    "glm-5.1": 200_000,
-    "glm-5": 204_800,
-    "glm-4.6": 204_800,
-    "glm-4.7": 204_800,
-    # Alibaba/Qwen
-    "qwen3-coder": 262_144,
-    "qwen3-max": 262_144,
-    "qwen3.5-plus": 1_000_000,
-    "qwen3.5-flash": 1_000_000,
-    "qwen3.6-plus": 1_000_000,
-    "qwen3.6-flash": 1_000_000,
-    "qwen3.7-max": 1_000_000,
-    "qwen3.7-plus": 1_000_000,
-    "qwen3.7-flash": 1_000_000,
-    "qwen3.8-max": 1_000_000,
-    "qwen3.8-plus": 1_000_000,
-    "qwen3.8-flash": 1_000_000,
-    "qwen3.5": 262_144,
-    "qwen3.6": 262_144,
-    "qwen-max": 32_768,
-    # Moonshot/Kimi
+    # Moonshot/Kimi.
     "kimi-k3": 1_048_576,
-    "kimi-k2": 262_144,
-    # MiniMax
+    # MiniMax. M3 and later (M3.1, ...) moved to 1M.
     "minimax-m3": 1_000_000,
-    "minimax-m2": 204_800,
-    # xAI
-    "grok-4.20": 1_000_000,
+    # xAI. Grok 4.3 is the oldest listed; 4.5+ ship a 500K window.
     "grok-4.3": 1_000_000,
+    "grok-4.20": 1_000_000,
     "grok-4.5": 500_000,
     "grok-4.6": 500_000,
     "grok-4.7": 500_000,
-    "grok-4": 256_000,
-    # Mistral
-    "mistral-large-4": 1_048_576,
-    "mistral-large": 262_144,
-    "mistral-medium": 262_144,
-    "mistral-small-2603": 262_144,
-    "mistral-small": 128_000,
-    "codestral": 256_000,
-    "devstral": 262_144,
-    "ministral-3b": 131_072,
-    "ministral": 262_144,
 }
 
 # Longest key first so a specific entry always wins over a shorter prefix
-# ("gpt-5.4-mini" before "gpt-5.4", "glm-5.1" before "glm-5").
+# ("gpt-5.5-pro" before "gpt-5.5", "glm-5.2" before "glm-5").
 _MODEL_KEYS_BY_LENGTH: tuple[str, ...] = tuple(sorted(MODEL_CONTEXT_WINDOWS, key=len, reverse=True))
+
+# First version segment of a key ("claude-opus-5" -> 5, "grok-4.20" -> 4).
+_VERSION_SEGMENT = re.compile(r"\d+")
 
 # Default context window for unknown models
 DEFAULT_CONTEXT_WINDOW = 200_000
@@ -169,13 +126,26 @@ DEFAULT_OUTPUT_LIMIT = 32768
 def match_builtin_context_window(model: str) -> int | None:
     """Resolve a context window from the built-in table, or ``None``.
 
+    A key answers a model id only when the model carries the same version
+    segment the key does, so the current-generation entries cannot be
+    borrowed by an older release: ``claude-opus-5`` answers
+    ``anthropic/claude-opus-5-5`` but not ``claude-opus-4-5``, and ``gemini-4``
+    answers ``gemini-4-argon`` but not ``gemini-2.5-pro``.
+
     Unlike :func:`get_model_context_window` this never falls back to a family
     heuristic or the default, so callers can tell "the table knows this model"
     apart from "nothing matched".
     """
     model_lower = model.lower()
     for known_model in _MODEL_KEYS_BY_LENGTH:
-        if known_model in model_lower:
+        position = model_lower.find(known_model)
+        if position < 0:
+            continue
+        key_version = _VERSION_SEGMENT.search(known_model)
+        if key_version is None:
+            return MODEL_CONTEXT_WINDOWS[known_model]
+        after_key = _VERSION_SEGMENT.match(model_lower, position + len(known_model))
+        if after_key is None or after_key.group() == key_version.group():
             return MODEL_CONTEXT_WINDOWS[known_model]
     return None
 
@@ -348,11 +318,11 @@ def get_model_context_window(
     if builtin is not None:
         return builtin
 
-    # Last-resort family heuristics for models newer than the built-in table.
-    # These track the current generation of each family rather than the
-    # window it had when the heuristic was written; an over-estimate makes
-    # compaction fire late, so they stay on the conservative side of each
-    # family's most common value.
+    # Last-resort family heuristics for models the table does not pin: either
+    # a family with no curated entry (Qwen, Mistral) or a release older than
+    # the table's floor (Claude 4.x). An over-estimate makes compaction fire
+    # late and surfaces as a provider-side rejection, so these stay on the
+    # conservative side of the family's most common window.
     model_lower = model.lower()
     for family, window in (
         ("gemini", 1_000_000),

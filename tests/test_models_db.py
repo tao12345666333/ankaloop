@@ -148,8 +148,9 @@ class TestBuiltinModels:
         """Test that built-in models are defined."""
         # Check that some models are defined (specific models may change)
         assert len(BUILTIN_MODELS) > 0
-        # Every major provider family must be represented.
-        families = ["gpt", "claude", "gemini", "deepseek", "glm", "qwen", "kimi", "minimax", "grok", "mistral"]
+        # Every family with a curated entry is represented. Qwen and Mistral
+        # are deliberately absent and fall back to the heuristics.
+        families = ["gpt", "claude", "gemini", "deepseek", "glm", "kimi", "minimax", "grok"]
         missing = [family for family in families if not any(family in m for m in BUILTIN_MODELS)]
         assert not missing, f"missing families in the offline table: {missing}"
 
