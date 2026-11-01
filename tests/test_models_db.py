@@ -224,8 +224,56 @@ class TestLookupOutputLimitFromDatabase:
             assert get_output_limit_from_database("unknown-model-xyz") == DEFAULT_OUTPUT_LIMIT
 
 
+class TestFetchModelsFromAPI:
+    """Tests for fetch_models_from_api and the global UA."""
+
+    def test_fetch_sends_ankaloop_user_agent(self):
+        """The models.dev request must carry the AnkaLoop UA, not httpx's default."""
+        from ankaloop import models_db
+
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {}
+
+        def fake_get(url, **kwargs):
+            captured["headers"] = kwargs.get("headers")
+            return FakeResponse()
+
+        fake_client = MagicMock()
+        fake_client.get.side_effect = fake_get
+        fake_client.__enter__ = MagicMock(return_value=fake_client)
+        fake_client.__exit__ = MagicMock(return_value=False)
+
+        with patch.object(models_db.httpx, "Client", return_value=fake_client) as client_cls:
+            models_db.fetch_models_from_api()
+
+        client_cls.assert_called_once()
+        headers = client_cls.call_args.kwargs["headers"]
+        assert headers["User-Agent"].startswith("AnkaLoop/")
+
+    def test_ankaloop_user_agent_includes_version(self):
+        import ankaloop
+        from ankaloop.user_agent import ankaloop_user_agent
+
+        ua = ankaloop_user_agent()
+        assert ua.startswith("AnkaLoop/")
+        assert ankaloop.__version__ in ua
+
+    def test_anka_extra_ua_appended(self, monkeypatch):
+        from ankaloop.user_agent import ankaloop_user_agent
+
+        monkeypatch.setenv("ANKA_EXTRA_UA", "prod-east")
+        ua = ankaloop_user_agent()
+        assert ua.endswith(" prod-east")
+
+
 class TestCacheFunctions:
-    """Tests for cache save/load functions."""
+    """Tests for cache functions."""
 
     def test_save_and_load_cache(self):
         """Test saving and loading cache."""

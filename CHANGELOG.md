@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the compaction threshold could disagree about the same model. `DEFAULT_CONTEXT_WINDOW`
   is likewise re-exported from its single definition.
 
+### Fixed
+
+- **LLM provider and models.dev requests identify as AnkaLoop**: the provider SDK clients
+  (any-llm → OpenAI/Anthropic SDKs) and the models.dev database fetch now send
+  `AnkaLoop/<version>` instead of the libraries' defaults (`OpenAI/Python ...`,
+  `anthropic-sdk-python/...`, `python-httpx/...`), so a deployment shows up as AnkaLoop in the
+  provider's request logs instead of as an anonymous SDK. An explicit `extra_headers`
+  User-Agent still overrides the default, and `ANKA_EXTRA_UA` appends a deployment marker, e.g.
+  `AnkaLoop/0.18.6 prod-east`, for gateways that require per-deployment identification.
+
 ## [0.18.6] — 2026-10-30
 
 ### Fixed
