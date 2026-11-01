@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Offline context-window table refreshed and de-duplicated**: the built-in fallback list was
+- **Offline context-window table refreshed and de-duplicated**
+  ([#103](https://github.com/tao12345666333/ankaloop/pull/103)): the built-in fallback list was
   a snapshot of the 2025 model lineup (GPT-5.1/5.2 at 400K, Claude 4.5 at 200K, DeepSeek at
   64K, Qwen/GLM at 128K), so an offline run — or any model the models.dev cache did not know —
   sized compaction against windows that were several generations stale, and models were capped
@@ -33,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **LLM provider and models.dev requests identify as AnkaLoop**: the provider SDK clients
+- **LLM provider and models.dev requests identify as AnkaLoop**
+  ([#104](https://github.com/tao12345666333/ankaloop/pull/104)): the provider SDK clients
   (any-llm → OpenAI/Anthropic SDKs) and the models.dev database fetch now send
   `AnkaLoop/<version>` instead of the libraries' defaults (`OpenAI/Python ...`,
   `anthropic-sdk-python/...`, `python-httpx/...`), so a deployment shows up as AnkaLoop in the
@@ -41,11 +43,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   User-Agent still overrides the default, and `ANKA_EXTRA_UA` appends a deployment marker, e.g.
   `AnkaLoop/0.18.6 prod-east`, for gateways that require per-deployment identification.
 
+---
+
+## [0.18.7] — 2026-11-01
+
+### Changed
+
+- **Offline context-window table refreshed and de-duplicated**
+  ([#103](https://github.com/tao12345666333/ankaloop/pull/103)): the built-in fallback list was
+  a snapshot of the 2025 model lineup (GPT-5.1/5.2 at 400K, Claude 4.5 at 200K, DeepSeek at
+  64K, Qwen/GLM at 128K), so an offline run — or any model the models.dev cache did not know —
+  sized compaction against windows that were several generations stale, and models were capped
+  far below their real capacity. The table now pins the current generation of OpenAI (GPT-5.5+),
+  Anthropic (Claude 5+), Google (Gemini 3.6+), DeepSeek (V4+), ZAI/GLM (5.2+), Moonshot (Kimi
+  K3+) and MiniMax (M3+). Releases older than those floors and families without an entry (Grok,
+  Mistral, Qwen) are left to the models.dev cache and the family heuristics instead of being
+  frozen at a number here. Matching is case-insensitive and substring-based, so a group or
+  provider prefix (`group/deepseek-v4-flash`) and a dated snapshot resolve, and an entry only
+  answers a model with the same version segment, so a current-generation entry is never borrowed
+  by an older release (`claude-opus-5` does not answer `claude-opus-4-5`).
+- **Family heuristics raised to each family's median window on models.dev**
+  ([#103](https://github.com/tao12345666333/ankaloop/pull/103)): Qwen and Mistral 128K → 262K,
+  Grok 256K → 500K, GPT-6 added at 1.05M, so an unpinned model is no longer under-sized
+  relative to what most of its family actually ships. Non-conversational variants (embeddings,
+  TTS, image generation) now resolve to 8,192 instead of inheriting a 1M family window that the
+  request-size preflight would then reject every request against.
+- **`models_db.BUILTIN_MODELS` is now the same table as `compaction.MODEL_CONTEXT_WINDOWS`**
+  ([#103](https://github.com/tao12345666333/ankaloop/pull/103)) instead of a hand-copied
+  duplicate. The two had already drifted apart, so an offline lookup and the compaction
+  threshold could disagree about the same model. `DEFAULT_CONTEXT_WINDOW` is likewise
+  re-exported from its single definition.
+
+### Fixed
+
+- **LLM provider and models.dev requests identify as AnkaLoop**
+  ([#104](https://github.com/tao12345666333/ankaloop/pull/104)): the provider SDK clients
+  (any-llm → OpenAI/Anthropic SDKs) and the models.dev database fetch now send
+  `AnkaLoop/<version>` instead of the libraries' defaults (`OpenAI/Python ...`,
+  `anthropic-sdk-python/...`, `python-httpx/...`), so a deployment shows up as AnkaLoop in the
+  provider's request logs instead of as an anonymous SDK. An explicit `extra_headers`
+  User-Agent still overrides the default, and `ANKA_EXTRA_UA` appends a deployment marker, e.g.
+  `AnkaLoop/0.18.7 prod-east`, for gateways that require per-deployment identification.
+
 ## [0.18.6] — 2026-10-30
 
 ### Fixed
 
-- **Telegram bot restarts itself after transient startup failures**: the background bot thread
+- **Telegram bot restarts itself after transient startup failures**
+  ([#100](https://github.com/tao12345666333/ankaloop/pull/100)): the background bot thread
   previously exited permanently on any startup error (e.g. a Telegram timeout while the host
   sandbox network was still coming up), leaving the bot unresponsive for the rest of the server's
   lifetime while only a bare "Telegram bot failed to start" line was logged. The thread is now a
@@ -60,7 +105,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Heartbeat replies [SILENT] when there are no tasks**
-  (PR #98), avoiding noisy no-op output.
+  ([#98](https://github.com/tao12345666333/ankaloop/pull/98)): the built-in `heartbeat` skill
+  told the agent to answer `HEARTBEAT_OK` when `HEARTBEAT.md` was empty or had nothing
+  actionable, but scheduled runs only suppress a notification for the `[SILENT]` marker, so
+  every quiet 30-minute check was delivered to the user as noise. The skill now replies
+  `[SILENT]`, which scheduled runs drop silently.
 
 ---
 
@@ -68,7 +117,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Memory dream no longer silently skips events**:
+- **User-level hooks resolve through the shared config directory**
+  ([#97](https://github.com/tao12345666333/ankaloop/pull/97)): `HooksManager` reassembled the
+  user config dir from `XDG_CONFIG_HOME` at load time instead of importing
+  `constants.CONFIG_DIR` like memory, sessions, the event bus, skills, and the CLI. A process
+  that rebinds the config dir the established way therefore kept loading `hooks.toml`,
+  `hooks/*.md`, and `plugins/` from the default location, so its hooks appeared not to exist.
+  Hooks and plugin hooks now follow the same binding as the rest of the runtime.
+- **Memory dream no longer silently skips events**
+  ([#94](https://github.com/tao12345666333/ankaloop/pull/94)):
   a consolidation pass fetched only the newest `DREAM_MAX_EVENTS` (80) events and persisted the
   window maximum as the `last_event_id` cursor, so any backlog that grew past one window between
   passes (long dream intervals, many concurrent sessions) was skipped forever. The dreamer now
@@ -76,7 +133,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SQLiteMemoryStore.get_events_after` and consolidates them in batches of `DREAM_MAX_EVENTS` per
   LLM call, advancing the cursor only over consolidated batches — no event is dropped while each
   prompt stays bounded.
-- **Memory dream stale-lock takeover no longer races**:
+- **Memory dream stale-lock takeover no longer races**
+  ([#94](https://github.com/tao12345666333/ankaloop/pull/94)):
   two dreamers could both conclude the same stale lock was theirs to take over (each read the
   stale timestamp, then unlinked the file, so the second unlink could delete the winner's freshly
   created lock) and run consolidation concurrently. Takeover is now atomic: the lock file is moved
@@ -158,16 +216,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PromptResponse`, and `GET /sessions/{id}/turns/{turn_id}`. `chunk` frames and `response`
   now contain answer content only, including for models that wrap reasoning in `<think>` tags,
   which are split out incrementally during streaming.
-- **`[chat] reasoning_as_content` config knob** (default `false`): set to `true` to restore the
-  legacy behavior of folding reasoning into message content with no separate reasoning channel.
-- **`requires_reasoning_echo` config knob** (default `false`, settable top-level or per
-  `[chat.providers.<name>]` profile): when enabled, every assistant message committed to the
-  conversation history carries the `reasoning_content` it was returned with, so it is replayed
-  to the provider on later turns. Providers that mandate the echo (rejecting multi-turn
-  requests whose history assistant messages lack it) become usable; everywhere else the trace
-  stays dropped so it never inflates prompt tokens. The final assistant message of a turn is
-  now committed through the tool loop's message delta (same content and position as before)
-  so the echo covers it too.
+- **`[chat] reasoning_as_content` config knob**
+  ([#82](https://github.com/tao12345666333/ankaloop/issues/82), default `false`): set to `true`
+  to restore the legacy behavior of folding reasoning into message content with no separate
+  reasoning channel.
+- **`requires_reasoning_echo` config knob**
+  ([#82](https://github.com/tao12345666333/ankaloop/issues/82), default `false`, settable
+  top-level or per `[chat.providers.<name>]` profile): when enabled, every assistant message
+  committed to the conversation history carries the `reasoning_content` it was returned with, so
+  it is replayed to the provider on later turns. Providers that mandate the echo (rejecting
+  multi-turn requests whose history assistant messages lack it) become usable; everywhere else
+  the trace stays dropped so it never inflates prompt tokens. The final assistant message of a
+  turn is now committed through the tool loop's message delta (same content and position as
+  before) so the echo covers it too.
 
 ---
 
@@ -175,7 +236,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Configurable prompt timeouts (`stream_timeout` / `prompt_timeout`)**: `HTTPClient`,
+- **Configurable prompt timeouts (`stream_timeout` / `prompt_timeout`)**
+  ([#79](https://github.com/tao12345666333/ankaloop/issues/79)): `HTTPClient`,
   `WebSocketClient`, and the `AnkaloopClient` facade now accept a `stream_timeout` for streaming
   prompt requests, and `HTTPClient` and the facade also accept a `prompt_timeout` for
   non-streaming ones — each is seconds, an `httpx.Timeout` for fine-grained control (e.g. an
@@ -183,16 +245,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replacing the hardcoded 300 seconds. `stream_timeout` bounds the gap between stream frames, so
   clients consuming turns with long-running tool calls can disable it without losing bounded
   connect/write timeouts; `prompt_timeout` bounds the entire wait until the turn completes.
-- **Server keepalive frames on prompt streams**: when a turn produces no events for
-  `stream_keepalive_seconds` (new `ServerConfig` field, default 15s, `None` disables), the NDJSON
-  and WebSocket prompt streams emit a `{"type": "ping"}` frame. Proxies and clients with read
-  timeouts therefore no longer drop healthy streams while a long tool execution produces no
+- **Server keepalive frames on prompt streams**
+  ([#79](https://github.com/tao12345666333/ankaloop/issues/79)): when a turn produces no events
+  for `stream_keepalive_seconds` (new `ServerConfig` field, default 15s, `None` disables), the
+  NDJSON and WebSocket prompt streams emit a `{"type": "ping"}` frame. Proxies and clients with
+  read timeouts therefore no longer drop healthy streams while a long tool execution produces no
   output, and consumers can distinguish "turn working" from "connection dead". Clients
   dispatching on known frame types ignore `ping` frames, so this is backward compatible.
 
 ### Fixed
 
-- **Prompt timeout error fidelity**: prompt timeouts now raise `StreamTimeoutError` (a
+- **Prompt timeout error fidelity** ([#79](https://github.com/tao12345666333/ankaloop/issues/79)):
+  prompt timeouts now raise `StreamTimeoutError` (a
   `PromptError` subclass with code `STREAM_TIMEOUT`) whose message names the underlying exception
   type, and generic prompt failures fall back to the exception class name when `str()` is empty —
   httpx timeout exceptions stringify to `""`, which previously produced an unhelpful
@@ -204,7 +268,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Remote memory backend (`[memory] backend = "http"`)**: a new `[memory]` config
+- **Remote memory backend (`[memory] backend = "http"`)**
+  ([#75](https://github.com/tao12345666333/ankaloop/pull/75)): a new `[memory]` config
   section lets multiple AnkaLoop processes and environments share one long-term
   memory through a remote HTTP service instead of local files. When enabled,
   `get_memory_manager()` returns an `HttpMemoryManager` that maps every memory
@@ -219,7 +284,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Interactive CLI no longer reports "Event loop is closed" after a turn**: the
+- **Interactive CLI no longer reports "Event loop is closed" after a turn**
+  ([#76](https://github.com/tao12345666333/ankaloop/pull/76)): the
   CLI runs each prompt in its own `asyncio.run` loop, and the per-turn LLM
   client was left for garbage collection without being closed. The provider
   SDK's HTTP client finalizer then scheduled transport cleanup on whatever loop
@@ -229,7 +295,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loop that served them at every creation site: the main turn, compaction, and
   the pre-compaction memory flush.
 
-- **XDG_CONFIG_HOME honored consistently**: session stores, transcripts, model
+- **XDG_CONFIG_HOME honored consistently**
+  ([#76](https://github.com/tao12345666333/ankaloop/pull/76)): session stores, transcripts, model
   cache, prompt history, and log paths now honor `XDG_CONFIG_HOME` instead of
   hardcoding `~/.config`, matching the config directory resolution. The shared
   constant lives in `ankaloop.constants.CONFIG_DIR`.
@@ -616,7 +683,17 @@ First release under the **AnkaLoop** name (formerly AMCP).
 
 - Initial public release: core agent engine, built-in tools (`read_file`, `grep`, `bash`, `write_file`), TOML configuration, CLI interface, and Dockerfile.
 
-[Unreleased]: https://github.com/tao12345666333/ankaloop/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/tao12345666333/ankaloop/compare/v0.18.7...HEAD
+[0.18.7]: https://github.com/tao12345666333/ankaloop/compare/v0.18.6...v0.18.7
+[0.18.6]: https://github.com/tao12345666333/ankaloop/compare/v0.18.5...v0.18.6
+[0.18.5]: https://github.com/tao12345666333/ankaloop/compare/v0.18.4...v0.18.5
+[0.18.4]: https://github.com/tao12345666333/ankaloop/compare/v0.18.3...v0.18.4
+[0.18.3]: https://github.com/tao12345666333/ankaloop/compare/v0.18.2...v0.18.3
+[0.18.2]: https://github.com/tao12345666333/ankaloop/compare/v0.18.1...v0.18.2
+[0.18.1]: https://github.com/tao12345666333/ankaloop/compare/v0.18.0...v0.18.1
+[0.18.0]: https://github.com/tao12345666333/ankaloop/compare/v0.17.1...v0.18.0
+[0.17.1]: https://github.com/tao12345666333/ankaloop/compare/v0.17.0...v0.17.1
+[0.17.0]: https://github.com/tao12345666333/ankaloop/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/tao12345666333/ankaloop/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/tao12345666333/ankaloop/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/tao12345666333/ankaloop/compare/v0.14.0-rc.1...v0.14.0
