@@ -14,17 +14,21 @@ Key Features:
 - Configurable safety margins
 
 Built-in Fallback Models (when models.dev unavailable):
-- OpenAI: GPT-5.1 Codex (400K), GPT-5.2 (400K), GPT-5.5 (400K)
-- Anthropic: Claude 4.5 Sonnet (200K), Claude 4.5 Opus (200K)
-- Google: Gemini 3 Pro (1M)
-- ZAI/GLM: GLM-4.6 (204K), GLM-4.7 (204K)
-- MiniMax: MiniMax M2.1 (204K)
+- OpenAI: GPT-5.5+ / GPT-6 (1.05M)
+- Anthropic: Claude 5.x (1M)
+- Google: Gemini 3.6+ (1M)
+- DeepSeek: DeepSeek-V4+ (1M)
+- ZAI/GLM: GLM-5.2+ (1M)
+- Moonshot: Kimi K3+ (1M), MiniMax: M3+ (1M)
+
+Older releases and families without a curated entry (Grok, Mistral, Qwen)
+fall back to the models.dev cache, then a per-family heuristic.
 
 Example:
     from ankaloop.compaction import SmartCompactor, get_model_context_window
 
     # Get context window for model
-    ctx_window = get_model_context_window("gpt-5.5")  # 400000
+    ctx_window = get_model_context_window("gpt-5.5")  # 1050000
 
     # Create compactor
     compactor = SmartCompactor(client, model="gpt-5.5")
@@ -38,6 +42,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -48,24 +53,64 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Model context window sizes (in tokens) - Built-in fallback models
-# Used when models.dev database is unavailable
+# Model context window sizes (in tokens) - Built-in fallback models.
+#
+# Used when the models.dev cache is unavailable (offline first run, failed
+# fetch, `models_db` import error). Values mirror models.dev so an offline
+# lookup resolves to the same window as an online one; a per-model
+# ``model_config.context_window`` override remains the escape hatch for
+# gateways that serve a narrower window than the upstream API.
+#
+# Only the current generation of each family is listed, from the oldest
+# release still worth answering for: GPT-5.5+, Claude 5+, Gemini 3.6+,
+# GLM-5.2+, DeepSeek-V4+, MiniMax-M3+ and Kimi-K3+. Older models, and
+# families without a curated entry (Grok, Mistral, Qwen), are left to the
+# cache and the heuristics below instead of being pinned to a stale number.
+#
+# Keys are matched as lowercase substrings, so provider prefixes
+# ("openai/gpt-5.5") and dated snapshots ("gpt-5.5-2026-05-13") resolve too.
+# Longer keys are tried first, which keeps "gpt-5.5-pro" from being answered
+# by "gpt-5.5".
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    # OpenAI
-    "gpt-5.1-codex": 400_000,
-    "gpt-5.2": 400_000,
-    "gpt-5.5": 400_000,
-    # Anthropic
-    "claude-4.5-sonnet": 200_000,
-    "claude-4.5-opus": 200_000,
-    # Google
-    "gemini-3-pro": 1_048_576,
-    # ZAI/GLM
-    "glm-4.6": 204_800,
-    "glm-4.7": 204_800,
-    # MiniMax
-    "minimax-m2.1": 204_800,
+    # OpenAI. Every GPT-5.5+ model ships a 1.05M window, including the GPT-6
+    # generation; "gpt-5.5" also covers "gpt-5.5-pro" and dated snapshots.
+    "gpt-5.5": 1_050_000,
+    "gpt-5.6": 1_050_000,
+    "gpt-6": 1_050_000,
+    # Anthropic. Claude 4.x stays out of the table; the heuristic answers it.
+    "claude-opus-5": 1_000_000,
+    "claude-sonnet-5": 1_000_000,
+    "claude-haiku-5": 1_000_000,
+    "claude-fable-5": 1_000_000,
+    "claude-mythos-5": 1_000_000,
+    # Google. Gemini 3.6 is the oldest generation listed; every later release
+    # (3.7, 3.8, 4.x) keeps the 1M window.
+    "gemini-3.6": 1_048_576,
+    "gemini-3.7": 1_048_576,
+    "gemini-3.8": 1_048_576,
+    "gemini-4": 1_048_576,
+    # DeepSeek. V4 and its flash/pro variants share a 1M window.
+    "deepseek-v4": 1_048_576,
+    # ZAI/GLM. GLM-5.2 widened the window to 1M and later releases kept it.
+    "glm-5.2": 1_000_000,
+    "glm-5.3": 1_000_000,
+    # Moonshot/Kimi.
+    "kimi-k3": 1_048_576,
+    # MiniMax. M3 and later (M3.1, ...) moved to 1M.
+    "minimax-m3": 1_000_000,
 }
+
+# Longest key first so a specific entry always wins over a shorter prefix
+# ("gpt-5.5-pro" before "gpt-5.5", "glm-5.2" before "glm-5").
+_MODEL_KEYS_BY_LENGTH: tuple[str, ...] = tuple(sorted(MODEL_CONTEXT_WINDOWS, key=len, reverse=True))
+
+# Substrings that mark a non-conversational variant of a family (embeddings,
+# text-to-speech, image generation). See the heuristic in
+# :func:`get_model_context_window`.
+_NON_CONVERSATIONAL_MARKERS = ("embedding", "tts", "-image", "-imagine", "-vision-ocr")
+
+# First version segment of a key ("claude-opus-5" -> 5, "gemini-3.6" -> 3).
+_VERSION_SEGMENT = re.compile(r"\d+")
 
 # Default context window for unknown models
 DEFAULT_CONTEXT_WINDOW = 200_000
@@ -75,6 +120,35 @@ DEFAULT_CONTEXT_WINDOW = 200_000
 # that unknown models send no explicit cap. Single source of truth; models_db
 # re-exports it.
 DEFAULT_OUTPUT_LIMIT = 32768
+
+
+def match_builtin_context_window(model: str) -> int | None:
+    """Resolve a context window from the built-in table, or ``None``.
+
+    A key answers a model id only when the model carries the same version
+    segment the key does, so the current-generation entries cannot be
+    borrowed by an older release: ``claude-opus-5`` answers
+    ``anthropic/claude-opus-5-5`` but not ``claude-opus-4-5``, and ``gemini-4``
+    answers ``gemini-4-argon`` but not ``gemini-2.5-pro``. Any prefix is
+    allowed, so a gateway-style id such as ``group/deepseek-v4-flash``
+    resolves.
+
+    Unlike :func:`get_model_context_window` this never falls back to a family
+    heuristic or the default, so callers can tell "the table knows this model"
+    apart from "nothing matched".
+    """
+    model_lower = model.lower()
+    for known_model in _MODEL_KEYS_BY_LENGTH:
+        position = model_lower.find(known_model)
+        if position < 0:
+            continue
+        key_version = _VERSION_SEGMENT.search(known_model)
+        if key_version is None:
+            return MODEL_CONTEXT_WINDOWS[known_model]
+        after_key = _VERSION_SEGMENT.match(model_lower, position + len(known_model))
+        if after_key is None or after_key.group() == key_version.group():
+            return MODEL_CONTEXT_WINDOWS[known_model]
+    return None
 
 
 class CompactionStrategy(Enum):
@@ -208,8 +282,8 @@ def get_model_context_window(
     1. User-provided ``model_config.context_window`` override (highest priority)
     2. Models database cache (from models.dev), using ``model_config.provider_id``
        when available for more accurate lookup
-    3. Built-in MODEL_CONTEXT_WINDOWS dictionary
-    4. Pattern-based heuristics
+    3. Built-in ``MODEL_CONTEXT_WINDOWS`` dictionary (substring match)
+    4. Pattern-based family heuristics
     5. Default fallback
 
     Args:
@@ -239,39 +313,50 @@ def get_model_context_window(
     except Exception as e:
         logger.debug(f"Failed to get context window from database: {e}")
 
-    # Exact match in built-in
-    if model in MODEL_CONTEXT_WINDOWS:
-        return MODEL_CONTEXT_WINDOWS[model]
+    # Built-in table, with substring matching for provider prefixes and
+    # dated snapshots (e.g. "gpt-5.5-2026-05-13" -> "gpt-5.5").
+    builtin = match_builtin_context_window(model)
+    if builtin is not None:
+        return builtin
 
-    # Try partial matching (e.g., "gpt-5.5-2026-05-13" -> "gpt-5.5")
-    # Sort by length (longest first) to prefer more specific matches
+    # Last-resort family heuristics for models the table does not pin: either
+    # a family with no curated entry (Grok, Qwen, Mistral) or a release older
+    # than the table's floor (Claude 4.x, GPT-5.4 and earlier).
+    #
+    # Each value is the median window of that family on models.dev. An
+    # under-estimate only compacts early, which wastes some of the window; an
+    # over-estimate compacts late, and `llm` preflight rejects the request
+    # before it is sent when the estimate exceeds the real limit. So the
+    # ordering matters more than the exact numbers: newer generations first,
+    # and anything left to the 200K default comes last.
     model_lower = model.lower()
-    sorted_models = sorted(MODEL_CONTEXT_WINDOWS.keys(), key=len, reverse=True)
-    for known_model in sorted_models:
-        if known_model in model_lower or model_lower.startswith(known_model):
-            return MODEL_CONTEXT_WINDOWS[known_model]
 
-    # Check for common patterns
-    if "gpt-5" in model_lower:
-        return 400_000
+    # Non-conversational variants of a family ship a far smaller window than
+    # the models it is named after (gemini-embedding-001 is 2K, the TTS and
+    # image variants are 8K-32K). The family heuristic would estimate them at
+    # 1M and the preflight below would then reject every real request, so
+    # answer them with the family's smallest common window instead.
+    if any(marker in model_lower for marker in _NON_CONVERSATIONAL_MARKERS):
+        return 8_192
 
-    if "claude" in model_lower:
-        return 200_000
-
-    if "gemini" in model_lower:
-        return 1_000_000
-
-    if "deepseek" in model_lower:
-        return 64_000
-
-    if "qwen" in model_lower or "glm" in model_lower:
-        return 128_000
-
-    if "mistral" in model_lower or "mixtral" in model_lower:
-        return 32_000
-
-    if "llama" in model_lower:
-        return 128_000
+    for family, window in (
+        ("gpt-6", 1_050_000),
+        ("gemini", 1_048_576),
+        ("gpt-5", 400_000),
+        ("gpt-4", 128_000),
+        ("claude", 200_000),
+        ("grok", 500_000),
+        ("kimi", 262_144),
+        ("minimax", 204_800),
+        ("deepseek", 131_072),
+        ("glm", 200_000),
+        ("qwen", 262_144),
+        ("llama", 128_000),
+        ("mistral", 262_144),
+        ("mixtral", 262_144),
+    ):
+        if family in model_lower:
+            return window
 
     logger.warning(f"Unknown model '{model}', using default context window of {DEFAULT_CONTEXT_WINDOW}")
     return DEFAULT_CONTEXT_WINDOW
