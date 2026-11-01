@@ -1663,6 +1663,29 @@ class TestRequestHeaders:
         # title still defaulted since not explicitly set
         assert headers["X-OpenRouter-Title"] == "AnkaLoop"
 
+    def test_default_headers_carry_global_user_agent(self):
+        cfg = ChatConfig(api_type="openai", model="test-model", api_key="test-key")
+        client = create_llm_client(cfg)
+        headers = client.client.client.default_headers
+        assert headers["User-Agent"].startswith("AnkaLoop/")
+
+    def test_extra_headers_override_global_user_agent(self):
+        cfg = ChatConfig(
+            api_type="openai",
+            model="test-model",
+            api_key="test-key",
+            extra_headers={"User-Agent": "CustomAgent/1.0"},
+        )
+        client = create_llm_client(cfg)
+        headers = client.client.client.default_headers
+        assert headers["User-Agent"] == "CustomAgent/1.0"
+
+    def test_responses_client_default_headers_carry_global_user_agent(self):
+        cfg = ChatConfig(api_type="openai_responses", model="test-model", api_key="test-key")
+        client = create_llm_client(cfg)
+        headers = client.client.client.default_headers
+        assert headers["User-Agent"].startswith("AnkaLoop/")
+
     def test_env_overrides_attribution_defaults(self, monkeypatch):
         monkeypatch.setenv("ANKA_APP_URL", "https://example.com")
         monkeypatch.setenv("ANKA_APP_NAME", "MyApp")

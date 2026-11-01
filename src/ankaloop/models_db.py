@@ -20,6 +20,7 @@ from .compaction import (
     match_builtin_context_window,
 )
 from .constants import CONFIG_DIR
+from .user_agent import default_headers
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +267,8 @@ def fetch_models_from_api(timeout: float = 30.0) -> ModelsDatabase:
     """
     logger.info(f"Fetching models from {MODELS_DEV_API_URL}")
 
-    with httpx.Client(timeout=timeout) as client:
+    # Identify as AnkaLoop rather than as a bare "python-httpx/*" client.
+    with httpx.Client(timeout=timeout, headers=default_headers()) as client:
         response = client.get(MODELS_DEV_API_URL)
         response.raise_for_status()
         data = response.json()

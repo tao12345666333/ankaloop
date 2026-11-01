@@ -23,6 +23,7 @@ from .compaction import (
     resolve_model_output_limit,
 )
 from .config import ChatConfig, ModelConfig
+from .user_agent import default_headers
 
 logger = logging.getLogger(__name__)
 
@@ -695,8 +696,8 @@ class AnyLLMClient(BaseLLMClient):
         from any_llm import AnyLLM
 
         client_options: dict[str, Any] = {"max_retries": 0} if provider in {"anthropic", "gmi", "openai"} else {}
-        if extra_headers:
-            client_options["default_headers"] = dict(extra_headers)
+        # Always send the global AnkaLoop UA; user headers override it.
+        client_options["default_headers"] = default_headers(extra_headers)
         self.client = AnyLLM.create(
             provider,
             api_key=api_key,
@@ -1117,8 +1118,8 @@ class OpenAIResponsesClient(BaseLLMClient):
         from any_llm import AnyLLM
 
         client_options: dict[str, Any] = {"max_retries": 0}
-        if extra_headers:
-            client_options["default_headers"] = dict(extra_headers)
+        # Always send the global AnkaLoop UA; user headers override it.
+        client_options["default_headers"] = default_headers(extra_headers)
         self.client = AnyLLM.create(
             "openai",
             api_key=api_key,
