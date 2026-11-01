@@ -46,32 +46,40 @@ class TestGetModelContextWindow:
 
     def test_gemini_family(self):
         """Test Gemini models have large context windows."""
-        gemini = get_model_context_window("gemini-2.5-pro")
+        # Gemini 3.6 is the oldest generation the table pins.
+        gemini = get_model_context_window("gemini-3.6-flash")
         assert gemini >= 1_000_000
+        # Anything older is left to the family heuristic, which is still 1M.
+        assert get_model_context_window("gemini-2.5-pro") >= 1_000_000
 
     def test_partial_match_gpt55(self):
         """Test partial matching for GPT-5.5 models."""
         result = get_model_context_window("gpt-5.5-2026-05-13")
         assert result >= 1_000_000
 
-    def test_provider_prefixed_model_name(self):
-        """Gateway-style ids such as ``openai/gpt-5.5`` resolve to the family entry."""
+    def test_gateway_prefixed_model_name(self):
+        """A group or provider prefix resolves to the same entry as the bare id."""
         with patch("ankaloop.models_db.load_models_cache", return_value=None):
             assert get_model_context_window("openai/gpt-5.5") == 1_050_000
+            assert get_model_context_window("group/deepseek-v4-flash") == 1_048_576
+            assert get_model_context_window("my-group/gemini-3.8-flash") == 1_048_576
+            assert get_model_context_window("vendor/claude-sonnet-5-5:thinking") == 1_000_000
+            # A suffix or a different case does not break the match either.
+            assert get_model_context_window("deepseek-v4-flash@group") == 1_048_576
+            assert get_model_context_window("DeepSeek-V4-Flash") == 1_048_576
 
     def test_deepseek_model(self):
         """Test DeepSeek model detection."""
         # Current DeepSeek generation ships a 1M window.
         assert get_model_context_window("deepseek-v4-flash") >= 1_000_000
         # Unknown DeepSeek variants fall back to the family heuristic.
-        assert get_model_context_window("deepseek-chat") >= 128_000
+        assert get_model_context_window("deepseek-chat") == 131_072
 
     def test_qwen_model(self):
         """Qwen has no curated table entry and keeps the family heuristic."""
-        qwen = get_model_context_window("qwen3.7-max")
-        # Conservative side of the family: an over-estimate compacts late.
-        assert qwen >= 128_000
-        assert qwen < 1_000_000
+        # The heuristic is the family median on models.dev, so a 1M model is
+        # not sized at the old 128K floor.
+        assert get_model_context_window("qwen3.8-max") == 262_144
 
     def test_glm_model(self):
         """Test GLM model detection."""
@@ -106,8 +114,14 @@ class TestGetModelContextWindow:
             assert match_builtin_context_window("qwen3.8-max") is None
             assert match_builtin_context_window("mistral-large-4") is None
 
-            # Claude 4.x is answered by the conservative family heuristic.
+            # Claude 4.x is answered by the family heuristic.
             assert get_model_context_window("claude-opus-4-5") == 200_000
+
+    def test_non_conversational_variants_are_not_sized_as_the_family(self):
+        """TTS, image and embedding variants ship a far smaller window."""
+        with patch("ankaloop.models_db.load_models_cache", return_value=None):
+            assert get_model_context_window("gemini-2.5-flash-preview-tts") == 8_192
+            assert get_model_context_window("google/gemini-embedding-001") == 8_192
 
     def test_table_resolves_newer_releases_of_a_pinned_family(self):
         """Newer point releases of a pinned family inherit its window."""

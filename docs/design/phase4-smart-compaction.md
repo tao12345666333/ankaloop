@@ -19,32 +19,36 @@ available, and falls back to a built-in table otherwise. The table is shared by 
 thresholds and the offline model lookup, so both agree on the same model.
 
 The table pins only the current generation of each family, from the oldest release still worth
-answering for; older releases and families without an entry are left to the models.dev cache and
+answering for. Older releases and families without an entry are left to the models.dev cache and
 then to a per-family heuristic, rather than being frozen at a number that goes stale:
 
 | Model family | Oldest pinned release | Context window |
 |--------------|-----------------------|----------------|
 | **OpenAI GPT** | gpt-5.5 (also covers gpt-5.6 and gpt-6) | 1,050,000 |
 | **Anthropic Claude** | claude-opus-5, claude-sonnet-5, claude-haiku-5, claude-fable-5 | 1,000,000 |
-| **Google Gemini** | gemini-3.7 (also covers 3.8 and 4.x) | 1,048,576 |
+| **Google Gemini** | gemini-3.6 (also covers 3.7, 3.8 and 4.x) | 1,048,576 |
 | **DeepSeek** | deepseek-v4 (also covers v4-flash / v4-pro) | 1,048,576 |
 | **ZAI/GLM** | glm-5.2 (also covers glm-5.3) | 1,000,000 |
 | **Moonshot Kimi** | kimi-k3 | 1,048,576 |
 | **MiniMax** | minimax-m3 (also covers m3.1) | 1,000,000 |
-| **xAI Grok** | grok-4.3, grok-4.20 | 1,000,000 |
-| **xAI Grok** | grok-4.5, grok-4.6, grok-4.7 | 500,000 |
 
-A table entry answers a model only when the model carries the same version segment as the key, so
-a current-generation entry is never borrowed by an older release: `claude-opus-5` answers
-`anthropic/claude-opus-5-5` but not `claude-opus-4-5`, and `gemini-4` answers `gemini-4-argon` but
-not `gemini-2.5-pro`. Newer point releases of a pinned family inherit its window (`gpt-6.1-sol`,
-`kimi-k3.1-pro`).
+Matching is case-insensitive and substring-based, so any prefix or suffix resolves to the same
+entry: `group/deepseek-v4-flash`, `deepseek/deepseek-v4-flash`, `deepseek-v4-flash@group` and
+`DeepSeek-V4-Flash` all get 1,048,576. A table entry answers a model only when the model carries
+the same version segment as the key, so a current-generation entry is never borrowed by an older
+release: `claude-opus-5` answers `anthropic/claude-opus-5-5` but not `claude-opus-4-5`, and
+`gemini-4` answers `gemini-4-argon` but not `gemini-2.5-pro`. Newer point releases of a pinned
+family inherit its window (`gpt-6.1-sol`, `kimi-k3.1-pro`).
 
-Models missing from both the cache and the table fall back to a per-family heuristic (for example
-Claude 4.x → 200K, Qwen → 128K, Mistral → 128K), and finally to a 200,000-token default. Because
-an over-estimate makes compaction fire late (surfacing as a provider-side request rejection), set
-`context_window` in `[chat.model_config]` when a gateway serves a narrower window than the
-upstream API.
+Models missing from both the cache and the table fall back to a per-family heuristic, whose value
+is the family's median window on models.dev (Claude → 200K, GPT-5 → 400K, Grok → 500K, Qwen and
+Mistral → 262K), and finally to a 200,000-token default. Non-conversational variants (embeddings,
+TTS, image generation) get 8,192 rather than their family's window, since they ship a far smaller
+one.
+
+Set `context_window` in `[chat.model_config]` when a gateway serves a narrower window than the
+upstream API: an under-estimate only compacts early, but an over-estimate makes the request-size
+preflight reject a request the provider would have accepted.
 
 ## How It Works
 

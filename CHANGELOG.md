@@ -14,13 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   64K, Qwen/GLM at 128K), so an offline run — or any model the models.dev cache did not know —
   sized compaction against windows that were several generations stale, and models were capped
   far below their real capacity. The table now pins the current generation of OpenAI (GPT-5.5+),
-  Anthropic (Claude 5+), Google (Gemini 3.7+), DeepSeek (V4+), ZAI/GLM (5.2+), Moonshot (Kimi
-  K3+), MiniMax (M3+) and xAI (Grok 4.x). Releases older than those floors and families without
-  an entry (Mistral, Qwen) are left to the models.dev cache and the family heuristics instead of
-  being frozen at a number here. Matching is case-insensitive and substring-based, so provider
-  prefixes (`openai/gpt-5.5`) and dated snapshots resolve, and an entry only answers a model
-  with the same version segment, so a current-generation entry is never borrowed by an older
-  release (`claude-opus-5` does not answer `claude-opus-4-5`).
+  Anthropic (Claude 5+), Google (Gemini 3.6+), DeepSeek (V4+), ZAI/GLM (5.2+), Moonshot (Kimi
+  K3+) and MiniMax (M3+). Releases older than those floors and families without an entry (Grok,
+  Mistral, Qwen) are left to the models.dev cache and the family heuristics instead of being
+  frozen at a number here. Matching is case-insensitive and substring-based, so a group or
+  provider prefix (`group/deepseek-v4-flash`) and a dated snapshot resolve, and an entry only
+  answers a model with the same version segment, so a current-generation entry is never borrowed
+  by an older release (`claude-opus-5` does not answer `claude-opus-4-5`).
+- **Family heuristics raised to each family's median window on models.dev** (Qwen and Mistral
+  128K → 262K, Grok 256K → 500K, GPT-6 added at 1.05M), so an unpinned model is no longer
+  under-sized relative to what most of its family actually ships. Non-conversational variants
+  (embeddings, TTS, image generation) now resolve to 8,192 instead of inheriting a 1M family
+  window that the request-size preflight would then reject every request against.
 - **`models_db.BUILTIN_MODELS` is now the same table as `compaction.MODEL_CONTEXT_WINDOWS`**
   instead of a hand-copied duplicate. The two had already drifted apart, so an offline lookup
   and the compaction threshold could disagree about the same model. `DEFAULT_CONTEXT_WINDOW`

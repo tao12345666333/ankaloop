@@ -16,14 +16,13 @@ Key Features:
 Built-in Fallback Models (when models.dev unavailable):
 - OpenAI: GPT-5.5+ / GPT-6 (1.05M)
 - Anthropic: Claude 5.x (1M)
-- Google: Gemini 3.7+ (1M)
+- Google: Gemini 3.6+ (1M)
 - DeepSeek: DeepSeek-V4+ (1M)
 - ZAI/GLM: GLM-5.2+ (1M)
 - Moonshot: Kimi K3+ (1M), MiniMax: M3+ (1M)
-- xAI: Grok 4.3+ (1M), Grok 4.5-4.7 (500K)
 
-Older releases and families without a curated entry (Mistral, Qwen) fall back
-to the models.dev cache, then a per-family heuristic.
+Older releases and families without a curated entry (Grok, Mistral, Qwen)
+fall back to the models.dev cache, then a per-family heuristic.
 
 Example:
     from ankaloop.compaction import SmartCompactor, get_model_context_window
@@ -63,10 +62,10 @@ logger = logging.getLogger(__name__)
 # gateways that serve a narrower window than the upstream API.
 #
 # Only the current generation of each family is listed, from the oldest
-# release still worth answering for: GPT-5.5+, Claude 5+, Gemini 3.7+,
-# GLM-5.2+, DeepSeek-V4+, MiniMax-M3+, Kimi-K3+ and Grok-4.x. Older models,
-# and families without a curated entry (Mistral, Qwen), are left to the cache
-# and the heuristics below instead of being pinned to a stale number here.
+# release still worth answering for: GPT-5.5+, Claude 5+, Gemini 3.6+,
+# GLM-5.2+, DeepSeek-V4+, MiniMax-M3+ and Kimi-K3+. Older models, and
+# families without a curated entry (Grok, Mistral, Qwen), are left to the
+# cache and the heuristics below instead of being pinned to a stale number.
 #
 # Keys are matched as lowercase substrings, so provider prefixes
 # ("openai/gpt-5.5") and dated snapshots ("gpt-5.5-2026-05-13") resolve too.
@@ -84,8 +83,9 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-haiku-5": 1_000_000,
     "claude-fable-5": 1_000_000,
     "claude-mythos-5": 1_000_000,
-    # Google. Gemini 3.7 is the oldest generation listed; every later release
-    # (3.8, 4.x) keeps the 1M window.
+    # Google. Gemini 3.6 is the oldest generation listed; every later release
+    # (3.7, 3.8, 4.x) keeps the 1M window.
+    "gemini-3.6": 1_048_576,
     "gemini-3.7": 1_048_576,
     "gemini-3.8": 1_048_576,
     "gemini-4": 1_048_576,
@@ -98,19 +98,18 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "kimi-k3": 1_048_576,
     # MiniMax. M3 and later (M3.1, ...) moved to 1M.
     "minimax-m3": 1_000_000,
-    # xAI. Grok 4.3 is the oldest listed; 4.5+ ship a 500K window.
-    "grok-4.3": 1_000_000,
-    "grok-4.20": 1_000_000,
-    "grok-4.5": 500_000,
-    "grok-4.6": 500_000,
-    "grok-4.7": 500_000,
 }
 
 # Longest key first so a specific entry always wins over a shorter prefix
 # ("gpt-5.5-pro" before "gpt-5.5", "glm-5.2" before "glm-5").
 _MODEL_KEYS_BY_LENGTH: tuple[str, ...] = tuple(sorted(MODEL_CONTEXT_WINDOWS, key=len, reverse=True))
 
-# First version segment of a key ("claude-opus-5" -> 5, "grok-4.20" -> 4).
+# Substrings that mark a non-conversational variant of a family (embeddings,
+# text-to-speech, image generation). See the heuristic in
+# :func:`get_model_context_window`.
+_NON_CONVERSATIONAL_MARKERS = ("embedding", "tts", "-image", "-imagine", "-vision-ocr")
+
+# First version segment of a key ("claude-opus-5" -> 5, "gemini-3.6" -> 3).
 _VERSION_SEGMENT = re.compile(r"\d+")
 
 # Default context window for unknown models
@@ -130,7 +129,9 @@ def match_builtin_context_window(model: str) -> int | None:
     segment the key does, so the current-generation entries cannot be
     borrowed by an older release: ``claude-opus-5`` answers
     ``anthropic/claude-opus-5-5`` but not ``claude-opus-4-5``, and ``gemini-4``
-    answers ``gemini-4-argon`` but not ``gemini-2.5-pro``.
+    answers ``gemini-4-argon`` but not ``gemini-2.5-pro``. Any prefix is
+    allowed, so a gateway-style id such as ``group/deepseek-v4-flash``
+    resolves.
 
     Unlike :func:`get_model_context_window` this never falls back to a family
     heuristic or the default, so callers can tell "the table knows this model"
@@ -319,25 +320,40 @@ def get_model_context_window(
         return builtin
 
     # Last-resort family heuristics for models the table does not pin: either
-    # a family with no curated entry (Qwen, Mistral) or a release older than
-    # the table's floor (Claude 4.x). An over-estimate makes compaction fire
-    # late and surfaces as a provider-side rejection, so these stay on the
-    # conservative side of the family's most common window.
+    # a family with no curated entry (Grok, Qwen, Mistral) or a release older
+    # than the table's floor (Claude 4.x, GPT-5.4 and earlier).
+    #
+    # Each value is the median window of that family on models.dev. An
+    # under-estimate only compacts early, which wastes some of the window; an
+    # over-estimate compacts late, and `llm` preflight rejects the request
+    # before it is sent when the estimate exceeds the real limit. So the
+    # ordering matters more than the exact numbers: newer generations first,
+    # and anything left to the 200K default comes last.
     model_lower = model.lower()
+
+    # Non-conversational variants of a family ship a far smaller window than
+    # the models it is named after (gemini-embedding-001 is 2K, the TTS and
+    # image variants are 8K-32K). The family heuristic would estimate them at
+    # 1M and the preflight below would then reject every real request, so
+    # answer them with the family's smallest common window instead.
+    if any(marker in model_lower for marker in _NON_CONVERSATIONAL_MARKERS):
+        return 8_192
+
     for family, window in (
-        ("gemini", 1_000_000),
-        ("claude", 200_000),
+        ("gpt-6", 1_050_000),
+        ("gemini", 1_048_576),
         ("gpt-5", 400_000),
-        ("gpt-4.1", 1_000_000),
-        ("grok", 256_000),
+        ("gpt-4", 128_000),
+        ("claude", 200_000),
+        ("grok", 500_000),
         ("kimi", 262_144),
         ("minimax", 204_800),
-        ("deepseek", 128_000),
+        ("deepseek", 131_072),
         ("glm", 200_000),
-        ("qwen", 131_072),
+        ("qwen", 262_144),
         ("llama", 128_000),
-        ("mistral", 128_000),
-        ("mixtral", 128_000),
+        ("mistral", 262_144),
+        ("mixtral", 262_144),
     ):
         if family in model_lower:
             return window
