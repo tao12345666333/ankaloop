@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import logging
 import subprocess
@@ -35,6 +36,8 @@ from .config import (
 from .constants import CONFIG_DIR
 from .mcp_client import call_mcp_tool, list_mcp_tools
 from .multi_agent import get_agent_registry
+from .program_status import clear as clear_program_status
+from .program_status import report as report_program_status
 from .skills import get_skill_manager
 from .tracing import configure_tracing_from_config
 
@@ -1033,8 +1036,15 @@ def main(
             history_file.parent.mkdir(parents=True, exist_ok=True)
             session: PromptSession[str] = PromptSession(history=FileHistory(str(history_file)))
 
+            # Terminal hosts such as Herdr list AnkaLoop's state from OSC 7501
+            # reports (see program_status). Clear the entry on any exit path so
+            # a placeholder process does not linger in the panel.
+            atexit.register(clear_program_status)
+
             while True:
                 try:
+                    # Waiting for keystrokes: let the terminal show the idle state.
+                    report_program_status("idle")
                     user_input = session.prompt("You: ").strip()
 
                     if not user_input:
@@ -1133,6 +1143,7 @@ def main(
                         continue
 
                     console.print(f"[bold]🤖 Agent {agent.name}[/bold] - Processing...")
+                    report_program_status("working", msg="thinking")
                     response = asyncio.run(
                         agent.services.session_service.run(
                             agent,
@@ -1154,14 +1165,17 @@ def main(
 
                 except EOFError:
                     console.print("[green]Goodbye! 👋[/green]")
+                    report_program_status("done")
                     break
                 except KeyboardInterrupt:
                     console.print("\\n[yellow]Interrupted. Type /exit to quit.[/yellow]")
                 except Exception as e:
+                    report_program_status("error", msg=str(e))
                     console.print(f"[red]Error: {e}[/red]")
                     console.print()
 
     except Exception as e:
+        report_program_status("error", msg=str(e))
         console.print(f"[red]Agent failed:[/red] {e}")
         raise typer.Exit(code=1) from None
 

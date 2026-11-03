@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Interactive CLI reports its state to Herdr and other OSC 7501 terminals**: `anka` now
+  emits the terminal *Program Status Protocol* sequence (OSC 7501) as a turn starts
+  (`working`), before every prompt (`idle`), on a failed turn (`error`), and on exit
+  (`done` then `clear`), so the session shows up in Herdr's Agents panel with the correct
+  state instead of looking like a plain shell. Reports go straight to `/dev/tty` and are a
+  silent no-op where there is no terminal, so piped and captured output are unchanged. Set
+  `ANKALOOP_PROGRAM_STATUS=0` (also `false`/`off`/`no`/`disabled`) to opt out.
+
+  Reports follow revision 0.4 of the *Program Status Protocol*
+  ([spec](https://control-codes.page/proposals/osc-7501/)), so any terminal that reads OSC 7501
+  (Herdr, Ghostty, Rex, Solo, phux) understands them. `msg` is stripped of control characters
+  before being base64-encoded: the spec rejects a report whose message decodes to a newline or
+  a tab — which `str(exc)` routinely contains — and a strict terminal would then drop the
+  whole report, losing the `error` state along with it. A report that would exceed the
+  4,096-byte limit is sent without its message rather than being discarded by the terminal.
+
 ### Changed
 
 - **Offline context-window table refreshed and de-duplicated**
