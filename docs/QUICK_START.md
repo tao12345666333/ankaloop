@@ -26,6 +26,33 @@ and `uvx ankaloop`.
 Telegram support is optional: `python -m pip install "ankaloop[telegram]"`. Provider support,
 including Anthropic, is included in the base package; do not install an `anthropic` extra.
 
+### Terminal integration (Herdr / OSC 7501)
+
+Terminal hosts such as [Herdr](https://herdr.dev) list running agents in a sidebar panel, but
+only for programs that report their state with the *Program Status Protocol* (OSC 7501). The
+interactive CLI reports it, so AnkaLoop appears in that panel with the right state:
+
+| Moment | Reported state |
+|--------|----------------|
+| waiting for your input (including startup) | `idle` |
+| a turn is running | `working` (message `thinking`) |
+| a turn failed | `error` |
+| you exit the interactive session | `done`, then `clear` |
+
+The sequence is written directly to `/dev/tty` (never to stdout, so piped or captured output is
+unaffected) and is silently skipped when there is no controlling terminal, on Windows, or when
+writes fail. Other terminals ignore unknown OSC sequences.
+
+To turn reporting off, set `ANKALOOP_PROGRAM_STATUS` to `0`, `false`, `off`, `no`, or
+`disabled`:
+
+```bash
+ANKALOOP_PROGRAM_STATUS=0 anka
+```
+
+To give the entry a custom name and icon in Herdr, register the `ankaloop` program in
+`~/.config/herdr-app/programs.json`. One-shot runs (`--once`) do not report a status.
+
 ## For Contributors
 
 ### 1. Clone and Setup
