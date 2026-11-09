@@ -286,8 +286,10 @@ class TestSessionEndpoints:
         ) as response:
             frames = [json.loads(line) for line in response.iter_lines() if line]
 
-        assert [frame["type"] for frame in frames] == ["start", "chunk", "chunk", "complete"]
-        assert [frame.get("content") for frame in frames[1:3]] == ["first", " second"]
+        assert frames[0]["type"] == "start"
+        assert frames[-1]["type"] == "complete"
+        streamed = "".join(frame.get("content") or "" for frame in frames if frame["type"] == "chunk")
+        assert streamed == "first second"
         assert len({frame["turn_id"] for frame in frames}) == 1
 
         turn_id = frames[0]["turn_id"]

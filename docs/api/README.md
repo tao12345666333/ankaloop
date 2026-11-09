@@ -238,11 +238,28 @@ turn status endpoint after disconnecting.
 {"type":"complete","turn_id":"turn-123","status":"completed"}
 ```
 
-The shared HTTP/WebSocket frame types are `start`, `reasoning`, `chunk`, `tool`, `error`,
-and `complete`. `reasoning` frames carry the model's reasoning trace on their own channel;
-`chunk` frames carry answer content only. Reasoning frames appear only when the model emits
-reasoning and `[chat] reasoning_as_content` is left at its default `false`.
-Slow consumers receive an `error` frame with code `SLOW_CONSUMER`; the turn continues running.
+The shared HTTP/WebSocket frame types are `start`, `reasoning`, `chunk`, `tool`,
+`stream.dropped`, `error`, and `complete`. `reasoning` frames carry the model's reasoning
+trace on their own channel; `chunk` frames carry answer content only. Reasoning frames appear
+only when the model emits reasoning and `[chat] reasoning_as_content` is left at its default
+`false`.
+
+Delta frames are coalesced. Adjacent `chunk` and `reasoning` fragments are joined and written
+at most once every ~16 ms, and buffered content is always written before a `tool` frame and
+before the terminal frame, so a model that emits one fragment per token cannot force thousands
+of frames per second. The first fragment of a burst is written immediately, so coalescing adds
+no latency to the start of a response.
+
+If a consumer falls far enough behind that the server has to discard delta frames, the stream
+carries a `stream.dropped` frame with the number of delta frames discarded since the previous
+one, and the turn keeps running:
+
+```jsonl
+{"type":"stream.dropped","turn_id":"turn-123","count":42}
+```
+
+`tool`, `error`, and `complete` frames are never discarded, so a consumer can always tell a
+gap in content from a failed turn. Consumers should ignore unknown frame types.
 
 When a turn produces no events for `stream_keepalive_seconds` (server configuration, default 15s),
 the stream emits a keepalive frame so proxies and clients with read timeouts do not drop healthy

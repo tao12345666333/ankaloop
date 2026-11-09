@@ -218,6 +218,111 @@ class TurnEvent:
 TurnStreamEvent = TurnEvent
 
 
+DEFAULT_TURN_STREAM_BYTES = 256 * 1024
+"""Default byte budget for one subscriber's queue of a turn's events."""
+
+DELTA_EVENT_TYPES = frozenset({"message.chunk", "message.reasoning"})
+"""Events that carry incremental model output and may be dropped for a lagging consumer."""
+
+_EVENT_OVERHEAD_BYTES = 96
+"""Rough fixed cost of one queued event, covering the event object and queue slot."""
+
+
+def _event_size(event: TurnEvent) -> int:
+    """Estimate the bytes one event occupies in a subscriber queue."""
+    size = _EVENT_OVERHEAD_BYTES + len(event.type)
+    for value in event.data.values():
+        size += len(value) if isinstance(value, str) else len(str(value))
+    return size
+
+
+class TurnEventQueue:
+    """Byte-budgeted event queue for one subscriber of a turn's stream.
+
+    The turn producer never blocks on a subscriber, so the queue needs a policy
+    for a consumer that falls behind. It is sized in bytes because frames differ
+    by orders of magnitude: a tool result and a one-token delta should not cost
+    the same budget. When the budget is exceeded, only delta events are
+    discarded. Control, tool, and terminal events are always delivered, even
+    when that leaves the queue above its budget. ``take_dropped`` reports how
+    many delta events were discarded so the relay can tell the consumer about
+    the gap instead of leaving it to infer one.
+    """
+
+    def __init__(self, turn_id: str, *, max_bytes: int = DEFAULT_TURN_STREAM_BYTES) -> None:
+        if max_bytes < 1:
+            raise ValueError("max_bytes must be positive")
+        self.turn_id = turn_id
+        self.max_bytes = max_bytes
+        self._events: deque[TurnEvent] = deque()
+        self._bytes = 0
+        self._dropped = 0
+        self._waiters: deque[asyncio.Future[None]] = deque()
+
+    @property
+    def queued_bytes(self) -> int:
+        """Return the estimated bytes currently queued."""
+        return self._bytes
+
+    def empty(self) -> bool:
+        """Return whether no events are queued."""
+        return not self._events
+
+    def qsize(self) -> int:
+        """Return the number of queued events."""
+        return len(self._events)
+
+    def put_nowait(self, event: TurnEvent) -> None:
+        """Queue one event, discarding delta events when the budget is exceeded.
+
+        A delta that does not fit is discarded instead of evicting queued
+        content: the consumer is already behind, so replacing what it has not
+        read yet with newer fragments would thrash without lowering the
+        backlog. Non-delta events are always queued, so a large tool payload
+        can carry the queue above its budget until the consumer drains it.
+        """
+        size = _event_size(event)
+        if event.type in DELTA_EVENT_TYPES and self._bytes + size > self.max_bytes:
+            self._dropped += 1
+            return
+        self._events.append(event)
+        self._bytes += size
+        self._wake()
+
+    def get_nowait(self) -> TurnEvent:
+        """Return the oldest queued event."""
+        if not self._events:
+            raise asyncio.QueueEmpty
+        event = self._events.popleft()
+        self._bytes -= _event_size(event)
+        return event
+
+    async def get(self) -> TurnEvent:
+        """Wait for and return the oldest queued event."""
+        while not self._events:
+            waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            self._waiters.append(waiter)
+            try:
+                await waiter
+            except asyncio.CancelledError:
+                with contextlib.suppress(ValueError):
+                    self._waiters.remove(waiter)
+                raise
+        return self.get_nowait()
+
+    def take_dropped(self) -> int:
+        """Return and reset the number of delta events discarded so far."""
+        dropped, self._dropped = self._dropped, 0
+        return dropped
+
+    def _wake(self) -> None:
+        while self._waiters:
+            waiter = self._waiters.popleft()
+            if not waiter.done():
+                waiter.set_result(None)
+                return
+
+
 class TurnHandle:
     """Track and await one turn independently from other queued turns."""
 
@@ -232,7 +337,7 @@ class TurnHandle:
         self._completion: asyncio.Future[TurnResult] = asyncio.get_running_loop().create_future()
         self.events: asyncio.Queue[TurnEvent] = asyncio.Queue()
         self.events.put_nowait(TurnEvent.transition(self.id, TurnStatus.QUEUED))
-        self._stream_subscribers: set[asyncio.Queue[TurnEvent]] = set()
+        self._stream_subscribers: set[TurnEventQueue] = set()
         self._done_callbacks: list[Callable[[TurnHandle], None]] = []
         self._event_callbacks: list[Callable[[TurnEvent], None]] = []
 
@@ -276,34 +381,20 @@ class TurnHandle:
         """Observe future lifecycle transitions without consuming the event queue."""
         self._event_callbacks.append(callback)
 
-    def subscribe(self, *, max_queue_size: int = 256) -> asyncio.Queue[TurnEvent]:
+    def subscribe(self, *, max_bytes: int = DEFAULT_TURN_STREAM_BYTES) -> TurnEventQueue:
         """Subscribe to output produced after this call."""
-        if max_queue_size < 1:
-            raise ValueError("max_queue_size must be positive")
-        queue: asyncio.Queue[TurnEvent] = asyncio.Queue(maxsize=max_queue_size)
+        queue = TurnEventQueue(self.id, max_bytes=max_bytes)
         self._stream_subscribers.add(queue)
         return queue
 
-    def unsubscribe(self, queue: asyncio.Queue[TurnEvent]) -> None:
+    def unsubscribe(self, queue: TurnEventQueue) -> None:
         """Stop an output subscription without affecting turn execution."""
         self._stream_subscribers.discard(queue)
 
     def _publish(self, event_type: str, data: dict[str, Any] | None = None) -> None:
         event = TurnEvent.output(self.id, event_type, data)
         for queue in tuple(self._stream_subscribers):
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                self._stream_subscribers.discard(queue)
-                while not queue.empty():
-                    queue.get_nowait()
-                queue.put_nowait(
-                    TurnEvent.output(
-                        self.id,
-                        "stream.overflow",
-                        {"error": "Turn stream consumer is too slow"},
-                    )
-                )
+            queue.put_nowait(event)
 
     def _finish(self, result: TurnResult) -> None:
         if self.done:
