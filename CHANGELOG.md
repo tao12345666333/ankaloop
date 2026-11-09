@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Optional you.md user profile in the system prompt**: set `user_profile = true` under
+  `[context]` to load a [you.md](https://github.com/brainsparker/you.md) profile (`YOU_MD_PATH`,
+  a project `.you.md`, `~/.you.md`, or the XDG locations, first match wins) into a `<user_profile>`
+  section next to persona, rules, and memory. The frontmatter is stripped and the section shares
+  the rules token budget. Off by default, so existing prompts are unchanged.
+
 ## [0.18.8] — 2026-11-09
 
 ### Added

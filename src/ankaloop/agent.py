@@ -72,6 +72,7 @@ from .tracing import (
 )
 from .tracing import semconv as sc
 from .turn_service import TurnService
+from .user_profile import UserProfileLoader
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +263,9 @@ class Agent:
 
         # Project rules loader (will be initialized with work_dir during run)
         self._project_rules_loader: ProjectRulesLoader | None = None
+
+        # Optional you.md user profile loader (initialized with work_dir during run)
+        self._user_profile_loader: UserProfileLoader | None = None
 
         # Event callbacks for real-time monitoring (used by server)
         self._event_callbacks: list[Callable[[str, dict[str, Any]], None]] = []
@@ -761,6 +765,33 @@ class Agent:
                 self.console.print(f"[dim]📋 Loaded project rules: {', '.join(file_names)}[/dim]")
 
         return rules
+
+    def _load_user_profile(self, work_dir: Path, enabled: bool) -> str:
+        """Load the you.md user profile when ``[context] user_profile`` is on.
+
+        Args:
+            work_dir: Working directory to search from
+            enabled: Value of ``ContextConfig.user_profile``
+
+        Returns:
+            Formatted profile section or empty string
+        """
+        if not enabled:
+            return ""
+
+        # Initialize or update the profile loader, mirroring the project rules loader
+        if self._user_profile_loader is None or self._user_profile_loader.work_dir != work_dir:
+            self._user_profile_loader = UserProfileLoader(work_dir, enabled=enabled)
+
+        profile = self._user_profile_loader.load_profile()
+
+        # Log loaded file
+        if profile:
+            loaded_file = self._user_profile_loader.get_loaded_file()
+            if loaded_file is not None:
+                self.console.print(f"[dim]👤 Loaded user profile: {loaded_file.name}[/dim]")
+
+        return profile
 
     def get_project_rules_info(self) -> dict[str, Any]:
         """Get information about loaded project rules.

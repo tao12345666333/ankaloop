@@ -111,6 +111,9 @@ class ContextBuilder:
         # Load project rules from AGENTS.md files
         project_rules = self._agent._load_project_rules(resolved_work_dir)
 
+        # Load the optional you.md user profile (off unless [context] user_profile = true)
+        user_profile = self._agent._load_user_profile(resolved_work_dir, context_cfg.user_profile)
+
         # Get skills information
         skill_manager = self._agent._skill_manager()
 
@@ -152,6 +155,8 @@ class ContextBuilder:
         )
         if project_rules:
             project_rules = self._agent._trim_to_token_budget(project_rules, budget.rules)
+        if user_profile:
+            user_profile = self._agent._trim_to_token_budget(user_profile, budget.rules)
         if persona_context:
             persona_context = self._agent._trim_to_token_budget(persona_context, budget.memory)
         remaining_memory_budget = max(budget.memory - estimate_text_tokens(persona_context), 0)
@@ -166,6 +171,8 @@ class ContextBuilder:
             combined_prompt = persona_context + "\n\n" + combined_prompt
         if project_rules:
             combined_prompt += "\n\n" + project_rules
+        if user_profile:
+            combined_prompt += "\n\n" + user_profile
         if skills_summary:
             combined_prompt += "\n\n" + skills_summary
         if memory_context:
