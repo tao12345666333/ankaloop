@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.8] — 2026-11-09
+
 ### Added
 
-- **Interactive CLI reports its state to Herdr and other OSC 7501 terminals**: `anka` now
+- **Interactive CLI reports its state to Herdr and other OSC 7501 terminals**
+  ([#106](https://github.com/tao12345666333/ankaloop/pull/106)): `anka` now
   emits the terminal *Program Status Protocol* sequence (OSC 7501) as a turn starts
   (`working`), before every prompt (`idle`), on a failed turn (`error`), and on exit
   (`done` then `clear`), so the session shows up in Herdr's Agents panel with the correct
@@ -25,34 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whole report, losing the `error` state along with it. A report that would exceed the
   4,096-byte limit is sent without its message rather than being discarded by the terminal.
 
-### Changed
-
-- **Offline context-window table refreshed and de-duplicated**
-  ([#103](https://github.com/tao12345666333/ankaloop/pull/103)): the built-in fallback list was
-  a snapshot of the 2025 model lineup (GPT-5.1/5.2 at 400K, Claude 4.5 at 200K, DeepSeek at
-  64K, Qwen/GLM at 128K), so an offline run — or any model the models.dev cache did not know —
-  sized compaction against windows that were several generations stale, and models were capped
-  far below their real capacity. The table now pins the current generation of OpenAI (GPT-5.5+),
-  Anthropic (Claude 5+), Google (Gemini 3.6+), DeepSeek (V4+), ZAI/GLM (5.2+), Moonshot (Kimi
-  K3+) and MiniMax (M3+). Releases older than those floors and families without an entry (Grok,
-  Mistral, Qwen) are left to the models.dev cache and the family heuristics instead of being
-  frozen at a number here. Matching is case-insensitive and substring-based, so a group or
-  provider prefix (`group/deepseek-v4-flash`) and a dated snapshot resolve, and an entry only
-  answers a model with the same version segment, so a current-generation entry is never borrowed
-  by an older release (`claude-opus-5` does not answer `claude-opus-4-5`).
-- **Family heuristics raised to each family's median window on models.dev** (Qwen and Mistral
-  128K → 262K, Grok 256K → 500K, GPT-6 added at 1.05M), so an unpinned model is no longer
-  under-sized relative to what most of its family actually ships. Non-conversational variants
-  (embeddings, TTS, image generation) now resolve to 8,192 instead of inheriting a 1M family
-  window that the request-size preflight would then reject every request against.
-- **`models_db.BUILTIN_MODELS` is now the same table as `compaction.MODEL_CONTEXT_WINDOWS`**
-  instead of a hand-copied duplicate. The two had already drifted apart, so an offline lookup
-  and the compaction threshold could disagree about the same model. `DEFAULT_CONTEXT_WINDOW`
-  is likewise re-exported from its single definition.
-
 ### Fixed
 
-- **A slow consumer no longer loses a turn's event stream**: each subscriber had a 256-frame
+- **A slow consumer no longer loses a turn's event stream**
+  ([#110](https://github.com/tao12345666333/ankaloop/pull/110)): each subscriber had a 256-frame
   queue fed without backpressure, and when it filled the relay dropped the subscriber and emitted
   an `error` frame with code `SLOW_CONSUMER`, so a consumer could not tell a dropped stream from
   a failed turn. Delta frames (`chunk`, `reasoning`) are now coalesced per turn and written at
@@ -66,14 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discarded delta frames so a consumer can log the gap instead of inferring one. Reasoning
   models, which emit one `message.reasoning` frame per token fragment, were the most likely to
   hit the old limit.
-- **LLM provider and models.dev requests identify as AnkaLoop**
-  ([#104](https://github.com/tao12345666333/ankaloop/pull/104)): the provider SDK clients
-  (any-llm → OpenAI/Anthropic SDKs) and the models.dev database fetch now send
-  `AnkaLoop/<version>` instead of the libraries' defaults (`OpenAI/Python ...`,
-  `anthropic-sdk-python/...`, `python-httpx/...`), so a deployment shows up as AnkaLoop in the
-  provider's request logs instead of as an anonymous SDK. An explicit `extra_headers`
-  User-Agent still overrides the default, and `ANKA_EXTRA_UA` appends a deployment marker, e.g.
-  `AnkaLoop/0.18.6 prod-east`, for gateways that require per-deployment identification.
 
 ---
 
@@ -715,7 +686,8 @@ First release under the **AnkaLoop** name (formerly AMCP).
 
 - Initial public release: core agent engine, built-in tools (`read_file`, `grep`, `bash`, `write_file`), TOML configuration, CLI interface, and Dockerfile.
 
-[Unreleased]: https://github.com/tao12345666333/ankaloop/compare/v0.18.7...HEAD
+[Unreleased]: https://github.com/tao12345666333/ankaloop/compare/v0.18.8...HEAD
+[0.18.8]: https://github.com/tao12345666333/ankaloop/compare/v0.18.7...v0.18.8
 [0.18.7]: https://github.com/tao12345666333/ankaloop/compare/v0.18.6...v0.18.7
 [0.18.6]: https://github.com/tao12345666333/ankaloop/compare/v0.18.5...v0.18.6
 [0.18.5]: https://github.com/tao12345666333/ankaloop/compare/v0.18.4...v0.18.5
