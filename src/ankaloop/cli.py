@@ -739,9 +739,8 @@ def _attach_sync(
                                                 border_style="red",
                                             )
                                         )
-                                    elif data.get("type") == "complete":
-                                        if full_response:
-                                            live.update(Panel(Markdown(full_response), border_style="cyan"))
+                                    elif data.get("type") == "complete" and full_response:
+                                        live.update(Panel(Markdown(full_response), border_style="cyan"))
                                 except json.JSONDecodeError:
                                     pass
                         except KeyboardInterrupt:
