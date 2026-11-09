@@ -10,6 +10,8 @@ from ankaloop.runtime import (
     SessionRuntime,
     SessionRuntimeStatus,
     TurnCancelledError,
+    TurnEvent,
+    TurnEventQueue,
     TurnOutput,
     TurnStatus,
 )
@@ -257,6 +259,114 @@ async def test_turn_frames_emits_full_reasoning_once_for_non_streamed_turn():
 
 
 @pytest.mark.asyncio
+async def test_turn_frames_coalesces_a_delta_burst_into_fewer_frames():
+    release = asyncio.Event()
+    tokens = [f"token-{index} " for index in range(200)]
+
+    async def process(request):
+        await release.wait()
+        return "".join(tokens)
+
+    runtime = SessionRuntime("coalesce", process)
+    handle = await runtime.submit("prompt")
+    frames = turn_frames(handle, "coalesce")
+    assert (await anext(frames))["type"] == "start"
+
+    for token in tokens:
+        runtime.publish_turn_event(handle.id, "message.chunk", {"content": token})
+    release.set()
+
+    remaining = [frame async for frame in frames]
+    chunks = [frame for frame in remaining if frame["type"] == "chunk"]
+
+    assert "".join(frame["content"] for frame in chunks) == "".join(tokens)
+    assert len(chunks) <= 20
+    assert remaining[-1]["type"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_turn_frames_coalesces_reasoning_and_chunks_without_reordering():
+    release = asyncio.Event()
+
+    async def process(request):
+        await release.wait()
+        return "answer"
+
+    runtime = SessionRuntime("segments", process)
+    handle = await runtime.submit("prompt")
+    frames = turn_frames(handle, "segments")
+    assert (await anext(frames))["type"] == "start"
+
+    runtime.publish_turn_event(handle.id, "message.reasoning", {"content": "think "})
+    runtime.publish_turn_event(handle.id, "message.reasoning", {"content": "hard"})
+    runtime.publish_turn_event(handle.id, "message.chunk", {"content": "ans"})
+    runtime.publish_turn_event(handle.id, "message.chunk", {"content": "wer"})
+    release.set()
+
+    remaining = [frame async for frame in frames]
+
+    assert [frame["type"] for frame in remaining] == ["reasoning", "reasoning", "chunk", "complete"]
+    assert "".join(frame["content"] for frame in remaining if frame["type"] == "reasoning") == "think hard"
+    assert "".join(frame["content"] for frame in remaining if frame["type"] == "chunk") == "answer"
+
+
+@pytest.mark.asyncio
+async def test_turn_frames_flushes_buffered_deltas_before_a_tool_frame():
+    release = asyncio.Event()
+
+    async def process(request):
+        await release.wait()
+        return "before tool"
+
+    runtime = SessionRuntime("flush", process)
+    handle = await runtime.submit("prompt")
+    frames = turn_frames(handle, "flush")
+    assert (await anext(frames))["type"] == "start"
+
+    runtime.publish_turn_event(handle.id, "message.chunk", {"content": "before "})
+    runtime.publish_turn_event(handle.id, "message.chunk", {"content": "tool"})
+    runtime.publish_turn_event(handle.id, "tool.call_start", {"tool_name": "read_file"})
+    release.set()
+
+    remaining = [frame async for frame in frames]
+
+    assert [frame["type"] for frame in remaining] == ["chunk", "chunk", "tool", "complete"]
+    assert remaining[0]["content"] + remaining[1]["content"] == "before tool"
+    assert remaining[2]["event"] == "call_start"
+
+
+@pytest.mark.asyncio
+async def test_turn_frames_reports_dropped_deltas_and_keeps_tool_and_terminal_frames():
+    release = asyncio.Event()
+
+    async def process(request):
+        await release.wait()
+        return request.prompt
+
+    runtime = SessionRuntime("drops", process)
+    handle = await runtime.submit("result")
+    frames = turn_frames(handle, "drops")
+    assert (await anext(frames))["type"] == "start"
+
+    runtime.publish_turn_event(
+        handle.id,
+        "tool.call_complete",
+        {"tool_name": "bash", "result": "x" * 300_000},
+    )
+    for _ in range(5):
+        runtime.publish_turn_event(handle.id, "message.chunk", {"content": "lost"})
+    release.set()
+
+    remaining = [frame async for frame in frames]
+    types = [frame["type"] for frame in remaining]
+
+    dropped = [frame for frame in remaining if frame["type"] == "stream.dropped"]
+    assert [frame["count"] for frame in dropped] == [5]
+    assert "tool" in types
+    assert types[-1] == "complete"
+
+
+@pytest.mark.asyncio
 async def test_turn_output_subscriptions_are_request_scoped():
     release = asyncio.Event()
 
@@ -285,7 +395,7 @@ async def test_turn_output_subscriptions_are_request_scoped():
 
 
 @pytest.mark.asyncio
-async def test_slow_turn_subscriber_is_failed_without_cancelling_turn():
+async def test_slow_turn_subscriber_keeps_the_turn_and_counts_dropped_deltas():
     release = asyncio.Event()
 
     async def process(request):
@@ -294,16 +404,52 @@ async def test_slow_turn_subscriber_is_failed_without_cancelling_turn():
 
     runtime = SessionRuntime("slow-stream", process)
     handle = await runtime.submit("result")
-    events = handle.subscribe(max_queue_size=1)
+    events = handle.subscribe(max_bytes=4096)
 
-    runtime.publish_turn_event(handle.id, "message.chunk", {"content": "first"})
-    runtime.publish_turn_event(handle.id, "message.chunk", {"content": "second"})
+    runtime.publish_turn_event(
+        handle.id,
+        "tool.call_start",
+        {"tool_name": "read_file", "arguments": {"path": "x" * 8192}},
+    )
+    runtime.publish_turn_event(handle.id, "message.chunk", {"content": "dropped"})
 
-    overflow = await events.get()
-    assert overflow.type == "stream.overflow"
-    assert events not in handle._stream_subscribers
+    assert events in handle._stream_subscribers
+    assert (await events.get()).type == "tool.call_start"
+    assert events.empty()
+    assert events.take_dropped() == 1
+
     release.set()
     assert await handle.wait() == "result"
+
+
+@pytest.mark.asyncio
+async def test_turn_event_queue_budgets_by_bytes_instead_of_frame_count():
+    queue = TurnEventQueue("turn-bytes", max_bytes=4096)
+
+    for _ in range(30):
+        queue.put_nowait(TurnEvent.output("turn-bytes", "message.chunk", {"content": "x"}))
+
+    assert queue.qsize() == 30
+    assert queue.queued_bytes <= 4096
+    assert queue.take_dropped() == 0
+
+    queue.put_nowait(TurnEvent.output("turn-bytes", "tool.call_complete", {"result": "x" * 8192}))
+
+    # One large tool payload exceeds the budget that thirty deltas fit into,
+    # and it is never discarded to stay under it.
+    assert queue.qsize() == 31
+    assert queue.queued_bytes > 4096
+
+    queue.put_nowait(TurnEvent.output("turn-bytes", "message.chunk", {"content": "y"}))
+    assert queue.qsize() == 31
+    assert queue.take_dropped() == 1
+
+    queue.put_nowait(TurnEvent.output("turn-bytes", "turn.completed"))
+    assert queue.qsize() == 32
+
+    before = queue.queued_bytes
+    assert queue.get_nowait().type == "message.chunk"
+    assert queue.queued_bytes < before
 
 
 @pytest.mark.asyncio

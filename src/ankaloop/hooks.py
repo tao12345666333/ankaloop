@@ -266,9 +266,8 @@ class HookOutput:
                 if "updatedResponse" in hook_output:
                     self.updated_response = hook_output["updatedResponse"]
 
-            elif hook_event == "Stop":
-                if hook_output.get("decision") == "block":
-                    self.continue_execution = True  # Override stop
+            elif hook_event == "Stop" and hook_output.get("decision") == "block":
+                self.continue_execution = True  # Override stop
 
 
 @dataclass

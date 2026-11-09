@@ -52,6 +52,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A slow consumer no longer loses a turn's event stream**: each subscriber had a 256-frame
+  queue fed without backpressure, and when it filled the relay dropped the subscriber and emitted
+  an `error` frame with code `SLOW_CONSUMER`, so a consumer could not tell a dropped stream from
+  a failed turn. Delta frames (`chunk`, `reasoning`) are now coalesced per turn and written at
+  most once every ~16 ms, and buffered content is always flushed before a `tool` frame and
+  before the terminal frame, so a model that emits one fragment per token cannot produce
+  thousands of frames per second; the first fragment of a burst is still written immediately, so
+  the change adds no latency to the start of a response. The queue is now budgeted in bytes
+  instead of frames, so one large tool payload and a one-token delta no longer consume the same
+  budget, and when the budget is exceeded only delta frames are discarded: `tool`, `error`, and
+  `complete` frames are always delivered, and a `stream.dropped` frame carries the number of
+  discarded delta frames so a consumer can log the gap instead of inferring one. Reasoning
+  models, which emit one `message.reasoning` frame per token fragment, were the most likely to
+  hit the old limit.
 - **LLM provider and models.dev requests identify as AnkaLoop**
   ([#104](https://github.com/tao12345666333/ankaloop/pull/104)): the provider SDK clients
   (any-llm → OpenAI/Anthropic SDKs) and the models.dev database fetch now send
