@@ -91,6 +91,43 @@ Notes for server implementers:
 - `include_default=true` on `/v1/soul` asks the server to return its built-in
   default persona when no custom soul exists.
 
+## User profile (you.md)
+
+Persona files describe the agent. A [you.md](https://github.com/brainsparker/you.md)
+profile describes the person the agent is working with: background, how they
+communicate, how they work, and their boundaries. The same file is shared with
+other tools (Claude Code, Cursor, Codex CLI, and so on), so AnkaLoop can read it
+instead of asking the user to restate their preferences.
+
+Loading is off by default. Turn it on in the user-level config:
+
+```toml
+[context]
+user_profile = true
+```
+
+When enabled, the first match in this order is used (a project-local profile
+replaces the user-level one, matching the precedence you.md documents):
+
+1. The path in the `YOU_MD_PATH` environment variable
+2. `.you.md` or `you.md` in the working directory, then in the repository root
+3. `~/.you.md`
+4. `~/.config/you.md` or `~/.config/you/you.md` (honoring `XDG_CONFIG_HOME`)
+
+The YAML frontmatter block is stripped and the body is injected into the system
+prompt inside a `<user_profile>` section, after project rules and before skills.
+It shares the `rules_budget_ratio` token budget with `AGENTS.md` rules. A
+missing, unreadable, or frontmatter-only file is skipped with a warning, and the
+profile is read once per working directory per session, like project rules.
+
+To create a profile without installing anything globally:
+
+```bash
+npx -y -p @brainsparker/you-md you-md init -i ~/.you.md
+```
+
+Only the file is read; the `you-md` CLI is not required at runtime.
+
 ## Config directory location
 
 All user-level paths (config, memory, sessions, transcripts, caches, logs)

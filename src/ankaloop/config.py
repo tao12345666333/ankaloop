@@ -180,6 +180,10 @@ class ContextConfig:
 
     tool_tiers: dict[str, str] = field(default_factory=dict)
 
+    user_profile: bool = False
+    """Load a you.md user profile (``YOU_MD_PATH``, project ``.you.md``, or
+    ``~/.you.md``) into the system prompt. Off by default; see docs/memory.md."""
+
 
 @dataclass
 class CORSConfig:
@@ -628,6 +632,7 @@ def _decode_context(raw: Mapping[str, object] | None) -> ContextConfig | None:
         tool_relevance_threshold=float(str(raw.get("tool_relevance_threshold", 0.12))),
         skill_relevance_threshold=float(str(raw.get("skill_relevance_threshold", 0.25))),
         tool_tiers=tool_tiers,
+        user_profile=bool(raw.get("user_profile", False)),
     )
 
 
@@ -992,6 +997,7 @@ def _encode_context(c: ContextConfig | None) -> dict | None:
         "tool_relevance_threshold": float(c.tool_relevance_threshold),
         "skill_relevance_threshold": float(c.skill_relevance_threshold),
         "tool_tiers": dict(c.tool_tiers),
+        "user_profile": bool(c.user_profile),
     }
 
 

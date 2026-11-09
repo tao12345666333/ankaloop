@@ -94,7 +94,7 @@ anka telegram setup
 | Area | Capabilities |
 | --- | --- |
 | **Coding loop** | File reading and search, patching and writing, shell execution, planning, todos, and subagent tasks |
-| **Context** | Persistent sessions, `AGENTS.md` rules, progressive loading, and smart compaction |
+| **Context** | Persistent sessions, `AGENTS.md` rules, optional `you.md` user profile, progressive loading, and smart compaction |
 | **Memory** | Durable facts, episodic history, persona files, and full-text session search |
 | **Agents** | Built-in `coder`, `explorer`, `planner`, and `focused_coder` roles |
 | **Interfaces** | Rich terminal UI, FastAPI HTTP/WebSocket server, and Telegram bot |
@@ -209,6 +209,9 @@ default_agent = "coder"
 progressive_tools = true
 progressive_skills = true
 response_ratio = 0.30
+# Load a you.md profile (~/.you.md or a project .you.md) into the system prompt.
+# Off by default; see docs/memory.md.
+user_profile = false
 ```
 
 </details>
