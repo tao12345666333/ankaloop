@@ -109,6 +109,37 @@ app.add_typer(mcp, name="mcp")
 telegram = typer.Typer(help="Telegram bot utilities")
 app.add_typer(telegram, name="telegram")
 
+acp = typer.Typer(help="ACP (Agent Client Protocol) utilities")
+app.add_typer(acp, name="acp")
+
+
+@acp.command("serve", help="Run AnkaLoop as an ACP agent over stdio for IDE clients")
+def acp_serve(
+    agent_name: Annotated[
+        str | None,
+        typer.Option("--agent", "-a", help="Agent type or agent specification file to use"),
+    ] = None,
+) -> None:
+    """Run AnkaLoop as an ACP server for clients such as Zed or T3 Code.
+
+    The client launches this command and speaks JSON-RPC over stdin/stdout.
+
+    Examples:
+        anka acp serve                     # Serve the default agent
+        anka acp serve --agent explorer    # Serve a specific agent type
+
+    Zed settings.json:
+        {"agent_servers": {"AnkaLoop": {"type": "custom",
+          "command": "anka", "args": ["acp", "serve"]}}}
+    """
+    try:
+        from .acp import run_acp_agent
+    except ImportError as exc:
+        console.print("[red]ACP support is not installed.[/red] Install it with: pip install 'ankaloop[acp]'")
+        raise typer.Exit(1) from exc
+
+    asyncio.run(run_acp_agent(agent_name=agent_name))
+
 
 @telegram.command("start", help="Start Telegram bot")
 def telegram_start(

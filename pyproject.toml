@@ -50,6 +50,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+acp = [
+  "agent-client-protocol>=1.0.0,<2",
+]
 anthropic = []
 telegram = [
   "python-telegram-bot>=21.0",
@@ -70,6 +73,7 @@ dev = [
   "types-PyYAML>=6.0.0",
   "telegramify-markdown>=1.0.0,<2",
   "opentelemetry-sdk>=1.39.0",
+  "agent-client-protocol>=1.0.0,<2",
 ]
 
 [project.scripts]

@@ -632,7 +632,7 @@ class Agent:
             **data,
         }
         mirror_event(event_type, data)
-        if event_type in {"message.chunk", "message.reasoning"} or event_type.startswith("tool.call_"):
+        if event_type in {"message.chunk", "message.reasoning", "llm.usage"} or event_type.startswith("tool.call_"):
             active_turn = self._runtime.active_turn
             if active_turn is not None:
                 event_data["turn_id"] = active_turn.id

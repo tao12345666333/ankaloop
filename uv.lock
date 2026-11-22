@@ -1,11 +1,24 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15'",
     "python_full_version == '3.14.*'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
+]
+
+[[package]]
+name = "agent-client-protocol"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pydantic-core" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/14/e2/085f4857cb864c3a423d76e205f75e1da1643862fd452e5cec47c3078d79/agent_client_protocol-1.0.0.tar.gz", hash = "sha256:24914d9996aaeeb08931191382d0ca1028b83743e2797cc05ded39b3bb754425", size = 187237, upload-time = "2026-11-09T00:34:01.706Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/30/a1/7e29d00f01fede44ffdc84099552720727f8bfda942fea79a4f7d5ef1294/agent_client_protocol-1.0.0-py3-none-any.whl", hash = "sha256:179c14266997841438ee15245a2668d31b2c695c13bff87d01c36e016185ddd0", size = 128090, upload-time = "2026-11-09T00:34:00.324Z" },
 ]
 
 [[package]]
@@ -41,7 +54,11 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+acp = [
+    { name = "agent-client-protocol" },
+]
 dev = [
+    { name = "agent-client-protocol" },
     { name = "mypy" },
     { name = "opentelemetry-sdk" },
     { name = "pytest" },
@@ -64,6 +81,8 @@ tracing = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=1.0.0,<2" },
+    { name = "agent-client-protocol", marker = "extra == 'dev'", specifier = ">=1.0.0,<2" },
     { name = "any-llm-sdk", specifier = ">=1.21.0,<2" },
     { name = "croniter", marker = "extra == 'telegram'", specifier = ">=1.3.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
@@ -92,7 +111,7 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.0" },
     { name = "uvicorn", specifier = ">=0.30.0" },
 ]
-provides-extras = ["anthropic", "telegram", "tracing", "dev"]
+provides-extras = ["acp", "anthropic", "telegram", "tracing", "dev"]
 
 [[package]]
 name = "annotated-doc"
@@ -255,7 +274,7 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version == '3.14.*'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c7/94/1009e248bbfbab11397abca7193bea6626806be9a327d399810d523a07cb/beartype-0.22.9.tar.gz", hash = "sha256:8f82b54aa723a2848a56008d18875f91c1db02c32ef6a62319a002e3e25a975f", size = 1608866, upload-time = "2025-12-13T06:50:30.72Z" }
 wheels = [

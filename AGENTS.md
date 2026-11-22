@@ -25,6 +25,8 @@ progressive context management.
 - HTTP/WebSocket server code lives under `src/ankaloop/server/`.
 - Client transports live under `src/ankaloop/client/`; protocol conversion code lives under
   `src/ankaloop/protocol/`.
+- The ACP server for editor clients lives in `src/ankaloop/acp/` and is a thin adapter over the
+  embedded client; it must not keep its own conversation state.
 - Telegram command handling is split between `src/ankaloop/telegram/bot.py` and
   `src/ankaloop/telegram/handlers.py`.
 - Keep shared slash-command behavior in `src/ankaloop/interaction.py` when possible so CLI,
@@ -67,6 +69,7 @@ src/ankaloop/
 ├── memory.py             # Memory orchestration
 ├── models_db.py          # Model metadata lookup
 ├── project_rules.py      # AGENTS.md loading
+├── acp/                  # ACP server for editor clients (optional extra)
 ├── client/               # Embedded, HTTP, and WebSocket clients
 ├── protocol/             # HTTP/WebSocket protocol adapters and converters
 ├── server/               # HTTP/WebSocket server
@@ -82,7 +85,7 @@ src/ankaloop/
 - `httpx` for HTTP clients.
 - `fastapi` and `uvicorn` for the server.
 - `openai` for OpenAI-compatible providers.
-- `fastmcp` for MCP integration.
+- `fastmcp` for MCP integration; `agent-client-protocol` (the `acp` extra) for editor clients.
 - Optional extras provide Anthropic, Telegram, and development dependencies. Install the
   `dev` and `telegram` extras when running the complete test suite locally.
 

@@ -97,7 +97,7 @@ anka telegram setup
 | **Context** | Persistent sessions, `AGENTS.md` rules, progressive loading, and smart compaction |
 | **Memory** | Durable facts, episodic history, persona files, and full-text session search |
 | **Agents** | Built-in `coder`, `explorer`, `planner`, and `focused_coder` roles |
-| **Interfaces** | Rich terminal UI, FastAPI HTTP/WebSocket server, and Telegram bot |
+| **Interfaces** | Rich terminal UI, FastAPI HTTP/WebSocket server, ACP for editor clients, and Telegram bot |
 | **Research** | Built-in web search/fetch plus MCP integration over stdio and HTTP/SSE |
 | **Extensions** | Skills, slash commands, hooks, custom YAML agent specs, and an event bus |
 | **Automation** | Cron-compatible jobs for systemd, Kubernetes, and external schedulers |
@@ -108,8 +108,8 @@ anka telegram setup
 ```text
  CLI ───────────────┐
  HTTP / WebSocket ──┼──▶ Agent runtime ──▶ Tools / MCP ──▶ Your project
- Telegram ──────────┘         │
-                              ├── Sessions & memory
+ ACP (editors) ─────┤         │
+ Telegram ──────────┘         ├── Sessions & memory
                               ├── Skills & project rules
                               └── Subagents
 ```
@@ -139,6 +139,9 @@ anka mcp call --server custom --tool example_tool --args '{"query":"rust async"}
 # Server and remote client
 anka serve
 anka attach http://localhost:8080
+
+# ACP agent for editor clients
+anka acp serve
 
 # Telegram
 anka telegram setup
@@ -314,6 +317,32 @@ docker run -p 8080:8080 \
 
 For protocol details, see the [client/server architecture](docs/architecture/client-server.md) and
 [API compatibility notes](docs/api/protocol-compatibility.md).
+
+## Editor integration (ACP)
+
+AnkaLoop can run as an [Agent Client Protocol](https://agentclientprotocol.com/) agent, so
+editors and agent clients that speak ACP — Zed, T3 Code, and others — can drive it directly.
+
+```bash
+python -m pip install "ankaloop[acp]"
+anka acp serve                     # JSON-RPC over stdio
+anka acp serve --agent explorer    # pick a built-in agent type or agent spec
+```
+
+The client launches the command; AnkaLoop keeps using its own model, tools, skills, and
+sessions. Register it as a custom agent, for example in Zed's `settings.json`:
+
+```json
+{
+  "agent_servers": {
+    "AnkaLoop": { "type": "custom", "command": "anka", "args": ["acp", "serve"] }
+  }
+}
+```
+
+Each ACP session maps to one AnkaLoop session: prompts stream text, reasoning, tool calls, and
+context usage back to the client, `session/load` replays the stored conversation, and cancelling
+a prompt stops the running turn.
 
 ## Telegram
 

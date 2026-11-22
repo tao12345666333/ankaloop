@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agent Client Protocol (ACP) server**: `anka acp serve` exposes AnkaLoop to ACP clients
+  such as Zed and T3 Code over stdio (install with `pip install "ankaloop[acp]"`). Each ACP
+  session maps to an embedded session, so model, tools, skills, and stored history are the ones
+  AnkaLoop already uses. Prompts stream text, reasoning, tool calls, and context usage as
+  `session/update` events; `session/load` replays the stored conversation; `session/list` shows
+  sessions with a stored transcript; `session/cancel` stops the running turn and answers
+  `stopReason: "cancelled"`.
+
+### Fixed
+
+- **`llm.usage` reaches turn stream subscribers**: per-model-call token usage and context
+  occupancy were only delivered to event callbacks and the timeline. They are now published on
+  the turn stream too, so transports that relay a turn's events can report usage.
+
 ## [0.18.8] — 2026-11-09
 
 ### Added
