@@ -27,6 +27,12 @@ class TestGetModelContextWindow:
     from either the models.dev cache or built-in fallbacks.
     """
 
+    @pytest.fixture(autouse=True)
+    def _no_models_cache(self):
+        """Keep the user's models.dev cache out of the exact-value assertions."""
+        with patch("ankaloop.models_db.load_models_cache", return_value=None):
+            yield
+
     def test_gpt5_family(self):
         """Test GPT-5 family models have large context windows."""
         gpt55 = get_model_context_window("gpt-5.5")

@@ -1,4 +1,14 @@
+import os
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clear_otel_env(monkeypatch):
+    """Keep tests from inheriting a developer's or CI's OTEL export setup."""
+    for name in tuple(os.environ):
+        if name.startswith("OTEL_"):
+            monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
