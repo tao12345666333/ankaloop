@@ -84,6 +84,9 @@ class ChatProviderConfig:
     # for gateways that reject the provider SDK's default credential header.
     auth_header: str | None = None
     reasoning_effort: str | None = None  # reasoning effort level sent with model requests
+    # Levels this provider/model accepts. None falls back to the global set;
+    # clients use this list to render the reasoning effort picker.
+    reasoning_effort_options: list[str] | None = None
     # Replay each assistant message's reasoning_content back to the provider on
     # later turns. Only enable for providers that require it (e.g. Reflection
     # rejects the request with HTTP 400 when an earlier assistant message lacks
@@ -108,6 +111,9 @@ class ChatConfig:
     # Reasoning effort level for models that support it. Unset or "auto" keeps the
     # provider default; otherwise forwarded to every model request.
     reasoning_effort: str | None = None
+    # Levels accepted by the active provider profile. None falls back to the
+    # global set; ACP clients use this list for their reasoning picker.
+    reasoning_effort_options: list[str] | None = None
 
     # Legacy compatibility: fold reasoning traces into the assistant content when
     # a step produces no visible content, and flush reasoning-only steps into the
@@ -443,6 +449,22 @@ def _decode_model_config(raw: Mapping[str, object] | None) -> ModelConfig | None
     )
 
 
+def _decode_reasoning_effort_options(raw: object) -> list[str] | None:
+    """Decode the provider's accepted reasoning effort levels."""
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("reasoning_effort_options must be a list of strings")
+    options: list[str] = []
+    for value in raw:
+        if not isinstance(value, str):
+            raise ValueError("reasoning_effort_options must contain only strings")
+        level = value.strip().lower()
+        if level and level not in options:
+            options.append(level)
+    return options or None
+
+
 def _decode_chat_provider(raw: Mapping[str, object]) -> ChatProviderConfig:
     """Decode a named chat provider profile from TOML."""
     base_url = raw.get("base_url")
@@ -456,6 +478,7 @@ def _decode_chat_provider(raw: Mapping[str, object]) -> ChatProviderConfig:
     api_key_command_ttl_seconds = raw.get("api_key_command_ttl_seconds")
     auth_header = raw.get("auth_header")
     reasoning_effort = raw.get("reasoning_effort")
+    reasoning_effort_options = raw.get("reasoning_effort_options")
     requires_reasoning_echo = raw.get("requires_reasoning_echo")
     raw_model_config = raw.get("model_config")
     model_config = _decode_model_config(raw_model_config) if isinstance(raw_model_config, dict) else None
@@ -481,6 +504,7 @@ def _decode_chat_provider(raw: Mapping[str, object]) -> ChatProviderConfig:
         ),
         auth_header=str(auth_header) if auth_header is not None else None,
         reasoning_effort=str(reasoning_effort) if reasoning_effort is not None else None,
+        reasoning_effort_options=_decode_reasoning_effort_options(reasoning_effort_options),
         requires_reasoning_echo=(bool(requires_reasoning_echo) if requires_reasoning_echo is not None else None),
     )
 
@@ -519,6 +543,8 @@ def _apply_active_provider(chat: ChatConfig) -> ChatConfig:
         chat.extra_headers = provider.extra_headers
     if provider.reasoning_effort is not None:
         chat.reasoning_effort = provider.reasoning_effort
+    if provider.reasoning_effort_options is not None:
+        chat.reasoning_effort_options = provider.reasoning_effort_options
     if provider.requires_reasoning_echo is not None:
         chat.requires_reasoning_echo = provider.requires_reasoning_echo
     return chat
@@ -539,6 +565,7 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
     max_retries = raw.get("max_retries", 2)
     retry_base_delay_seconds = raw.get("retry_base_delay_seconds", 0.5)
     reasoning_effort = raw.get("reasoning_effort")
+    reasoning_effort_options = raw.get("reasoning_effort_options")
     reasoning_as_content = raw.get("reasoning_as_content", False)
     requires_reasoning_echo = raw.get("requires_reasoning_echo", False)
     tool_loop_limit = raw.get("tool_loop_limit")
@@ -602,6 +629,7 @@ def _decode_chat(raw: Mapping[str, object] | None) -> ChatConfig | None:
         max_queue_size=int(str(max_queue_size)) if max_queue_size is not None else None,
         extra_headers=extra_headers,
         reasoning_effort=str(reasoning_effort) if reasoning_effort is not None else None,
+        reasoning_effort_options=_decode_reasoning_effort_options(reasoning_effort_options),
         reasoning_as_content=bool(reasoning_as_content),
         requires_reasoning_echo=bool(requires_reasoning_echo),
     )
@@ -902,6 +930,8 @@ def _encode_chat_provider(p: ChatProviderConfig) -> dict:
         out["extra_headers"] = dict(p.extra_headers)
     if p.reasoning_effort:
         out["reasoning_effort"] = p.reasoning_effort
+    if p.reasoning_effort_options:
+        out["reasoning_effort_options"] = list(p.reasoning_effort_options)
     if p.requires_reasoning_echo is not None:
         out["requires_reasoning_echo"] = bool(p.requires_reasoning_echo)
     return out
@@ -931,6 +961,8 @@ def _encode_chat(c: ChatConfig | None) -> dict | None:
     out["retry_base_delay_seconds"] = float(c.retry_base_delay_seconds)
     if c.reasoning_effort and not provider_profiles_enabled:
         out["reasoning_effort"] = c.reasoning_effort
+    if c.reasoning_effort_options and not provider_profiles_enabled:
+        out["reasoning_effort_options"] = list(c.reasoning_effort_options)
     if c.reasoning_as_content:
         out["reasoning_as_content"] = True
     if c.requires_reasoning_echo and not provider_profiles_enabled:

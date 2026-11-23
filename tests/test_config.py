@@ -1,3 +1,5 @@
+import pytest
+
 import ankaloop.config as config_module
 
 
@@ -532,6 +534,24 @@ def test_decode_chat_reasoning_effort_defaults_to_none():
     assert "reasoning_effort" not in encoded
 
 
+def test_decode_encode_chat_reasoning_effort_options_roundtrip():
+    raw = {
+        "model": "test-model",
+        "reasoning_effort": "high",
+        "reasoning_effort_options": [" LOW ", "high", "low"],
+    }
+    chat = config_module._decode_chat(raw)
+    assert chat is not None
+    assert chat.reasoning_effort_options == ["low", "high"]
+    encoded = config_module._encode_chat(chat)
+    assert encoded["reasoning_effort_options"] == ["low", "high"]
+
+
+def test_decode_chat_reasoning_effort_options_rejects_non_list():
+    with pytest.raises(ValueError, match="reasoning_effort_options"):
+        config_module._decode_chat({"model": "test-model", "reasoning_effort_options": "high"})
+
+
 def test_decode_encode_chat_reasoning_as_content_roundtrip():
     chat = config_module._decode_chat({"model": "test-model", "reasoning_as_content": True})
     assert chat is not None
@@ -561,6 +581,20 @@ def test_decode_encode_provider_reasoning_effort_roundtrip():
     assert encoded["reasoning_effort"] == "low"
 
 
+def test_decode_encode_provider_reasoning_effort_options_roundtrip():
+    raw = {
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "test-model",
+        "api_type": "openai",
+        "reasoning_effort": "high",
+        "reasoning_effort_options": ["low", "high", "max"],
+    }
+    provider = config_module._decode_chat_provider(raw)
+    assert provider.reasoning_effort_options == ["low", "high", "max"]
+    encoded = config_module._encode_chat_provider(provider)
+    assert encoded["reasoning_effort_options"] == ["low", "high", "max"]
+
+
 def test_active_provider_applies_reasoning_effort():
     raw = {
         "active_provider": "openrouter",
@@ -570,6 +604,7 @@ def test_active_provider_applies_reasoning_effort():
                 "model": "test-model",
                 "api_type": "openai",
                 "reasoning_effort": "high",
+                "reasoning_effort_options": ["low", "high", "max"],
             },
             "other": {
                 "base_url": "https://other.example/v1",
@@ -581,6 +616,7 @@ def test_active_provider_applies_reasoning_effort():
     chat = config_module._decode_chat(raw)
     assert chat is not None
     assert chat.reasoning_effort == "high"
+    assert chat.reasoning_effort_options == ["low", "high", "max"]
 
 
 def test_decode_memory_defaults():

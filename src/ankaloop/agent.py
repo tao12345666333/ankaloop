@@ -192,6 +192,7 @@ class Agent:
         *,
         ephemeral: bool = False,
         services: ApplicationServices | None = None,
+        console: Console | None = None,
     ):
         """Initialize an agent, optionally without automatic durable projections."""
         from .task import TaskManager
@@ -200,7 +201,9 @@ class Agent:
         self._uses_default_services = services is None
         self.services = services or ApplicationServices.default()
         self.ephemeral = ephemeral
-        self.console = Console()
+        self.console = console or Console()
+        # Per-session override used by the ACP adapter; None inherits config.
+        self.reasoning_effort_override: str | None = None
         self.tool_registry = self.services.tool_registry
         self.execution_context: dict[str, Any] = {}
         self.step_count = 0
@@ -671,6 +674,9 @@ class Agent:
             chat.model = self.agent_spec.model
         if self.agent_spec.base_url:
             chat.base_url = self.agent_spec.base_url
+        if self.reasoning_effort_override is not None:
+            # "auto" explicitly clears the provider's configured effort.
+            chat.reasoning_effort = None if self.reasoning_effort_override == "auto" else self.reasoning_effort_override
         cfg.chat = chat
         return cfg
 
@@ -1759,6 +1765,7 @@ def create_agent_from_config(
     *,
     ephemeral: bool = False,
     services: ApplicationServices | None = None,
+    console: Console | None = None,
 ) -> Agent:
     """
     Create an Agent from an AgentConfig.
@@ -1795,6 +1802,7 @@ def create_agent_from_config(
         session_id=session_id,
         ephemeral=ephemeral,
         services=services,
+        console=console,
     )
 
 
@@ -1803,6 +1811,7 @@ def create_agent_by_name(
     session_id: str | None = None,
     *,
     services: ApplicationServices | None = None,
+    console: Console | None = None,
 ) -> Agent:
     """
     Create an Agent by looking up its name in the registry.
@@ -1823,7 +1832,7 @@ def create_agent_by_name(
         available = registry.list_agents()
         raise ValueError(f"Unknown agent: {name}. Available agents: {', '.join(available)}")
 
-    return create_agent_from_config(config, session_id, services=services)
+    return create_agent_from_config(config, session_id, services=services, console=console)
 
 
 def create_subagent(
@@ -1860,7 +1869,13 @@ def create_subagent(
     )
 
     # Create subagent with a new session (isolated from parent)
-    return create_agent_from_config(config, services=parent_agent.services)
+    subagent = create_agent_from_config(
+        config,
+        services=parent_agent.services,
+        console=parent_agent.console,
+    )
+    subagent.reasoning_effort_override = parent_agent.reasoning_effort_override
+    return subagent
 
 
 def list_available_agents() -> list[str]:

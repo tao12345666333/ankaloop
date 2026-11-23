@@ -11,6 +11,8 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
 
+from rich.console import Console
+
 from ..application_services import ApplicationServices
 from .base import BaseClient, ResponseChunk
 from .exceptions import SessionError, SessionNotFoundError
@@ -70,9 +72,21 @@ class EmbeddedClient(BaseClient):
                 print(chunk.content)
     """
 
-    def __init__(self, services: ApplicationServices | None = None):
-        """Initialize the embedded client."""
+    def __init__(
+        self,
+        services: ApplicationServices | None = None,
+        *,
+        console: Console | None = None,
+    ):
+        """Initialize the embedded client.
+
+        Args:
+            services: Shared application services; defaults to the global set.
+            console: Console for agent diagnostics. Pass a stderr console when
+                stdout carries a protocol stream (for example ACP).
+        """
         self.services = services or ApplicationServices.default()
+        self._console = console
         self._sessions: dict[str, EmbeddedSession] = {}
         self._closing_sessions: set[str] = set()
         self._connected = False
@@ -170,6 +184,7 @@ class EmbeddedClient(BaseClient):
                     agent_name,
                     session_id=sid,
                     services=self.services,
+                    console=self._console,
                 )
                 resolved_name = agent_name
             else:
@@ -180,16 +195,31 @@ class EmbeddedClient(BaseClient):
 
                 try:
                     spec = load_agent_spec(Path(agent_name))
-                    agent = Agent(spec, session_id=sid, services=self.services)
+                    agent = Agent(
+                        spec,
+                        session_id=sid,
+                        services=self.services,
+                        console=self._console,
+                    )
                     resolved_name = spec.name
                 except Exception:
                     # Fall back to default
                     spec = get_default_agent_spec()
-                    agent = Agent(spec, session_id=sid, services=self.services)
+                    agent = Agent(
+                        spec,
+                        session_id=sid,
+                        services=self.services,
+                        console=self._console,
+                    )
                     resolved_name = spec.name
         else:
             spec = get_default_agent_spec()
-            agent = Agent(spec, session_id=sid, services=self.services)
+            agent = Agent(
+                spec,
+                session_id=sid,
+                services=self.services,
+                console=self._console,
+            )
             resolved_name = spec.name
 
         # Create session

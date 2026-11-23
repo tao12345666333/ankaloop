@@ -18,9 +18,20 @@ from acp.schema import (
     ToolCallStart,
     UsageUpdate,
 )
+from rich.console import Console
 
+from ankaloop import ui
 from ankaloop.acp import server as acp_server
-from ankaloop.acp.server import ACPSessionAgent, _prompt_text, _tool_kind, _tool_title
+from ankaloop.acp.server import (
+    ACPSessionAgent,
+    _load_session_meta,
+    _prompt_text,
+    _save_session_meta,
+    _SessionRecord,
+    _title_from,
+    _tool_kind,
+    _tool_title,
+)
 from ankaloop.application_services import ApplicationServices
 from ankaloop.client.embedded import EmbeddedClient
 from ankaloop.runtime import TurnEvent, TurnStatus
@@ -81,6 +92,8 @@ def config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point session and ACP metadata storage at a temporary directory."""
     monkeypatch.setattr(acp_server, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr("ankaloop.agent.CONFIG_DIR", tmp_path)
+    monkeypatch.setattr("ankaloop.config.CONFIG_DIR", tmp_path)
+    monkeypatch.setattr("ankaloop.config.CONFIG_FILE", tmp_path / "config.toml")
     return tmp_path
 
 
@@ -91,8 +104,9 @@ def services() -> ApplicationServices:
 
 
 @pytest.fixture
-def agent(services: ApplicationServices) -> ACPSessionAgent:
-    """An ACP agent wired to a fake client connection."""
+def agent(services: ApplicationServices, config_dir: Path) -> ACPSessionAgent:
+    """An ACP agent wired to a fake client connection and temporary metadata."""
+    del config_dir
     acp_agent = ACPSessionAgent(client=EmbeddedClient(services=services))
     acp_agent.on_connect(FakeConn())
     return acp_agent
@@ -109,6 +123,9 @@ def test_initialize_advertises_capabilities(agent: ACPSessionAgent) -> None:
     assert capabilities.load_session is True
     assert capabilities.session_capabilities is not None
     assert capabilities.session_capabilities.list is not None
+    # Prompts are flattened to text, so image blocks must not be advertised.
+    assert capabilities.prompt_capabilities is not None
+    assert capabilities.prompt_capabilities.image is False
 
 
 def test_new_session_creates_embedded_session(agent: ACPSessionAgent, tmp_path: Path) -> None:
@@ -123,6 +140,126 @@ def test_new_session_records_metadata(agent: ACPSessionAgent, config_dir: Path, 
 
     meta = json.loads((config_dir / "acp-sessions.json").read_text())
     assert meta[response.session_id]["cwd"] == str(tmp_path)
+
+
+def _write_chat_config(config_dir: Path, *, effort: str = "high", options: list[str] | None = None) -> None:
+    lines = [
+        "[chat]",
+        'active_provider = "test"',
+        f'reasoning_effort = "{effort}"',
+        "",
+        "[chat.providers.test]",
+        'base_url = "https://example.test/v1"',
+        'model = "test-model"',
+        'api_type = "openai"',
+        f'reasoning_effort = "{effort}"',
+    ]
+    if options is not None:
+        quoted = ", ".join(f'"{value}"' for value in options)
+        lines.append(f"reasoning_effort_options = [{quoted}]")
+    (config_dir / "config.toml").write_text("\n".join(lines) + "\n")
+
+
+def test_new_session_advertises_reasoning_effort(agent: ACPSessionAgent, config_dir: Path, tmp_path: Path) -> None:
+    _write_chat_config(config_dir, effort="high", options=["low", "high", "max"])
+
+    response = asyncio.run(agent.new_session(cwd=str(tmp_path)))
+
+    option = response.config_options[0]
+    assert option.id == "reasoning_effort"
+    assert option.category == "thought_level"
+    assert option.current_value == "high"
+    assert [item.value for item in option.options] == ["low", "high", "max", "auto"]
+
+
+def test_new_session_falls_back_to_global_reasoning_effort_levels(
+    agent: ACPSessionAgent, config_dir: Path, tmp_path: Path
+) -> None:
+    _write_chat_config(config_dir, effort="high")
+
+    response = asyncio.run(agent.new_session(cwd=str(tmp_path)))
+
+    values = [item.value for item in response.config_options[0].options]
+    assert "medium" in values
+    assert values[-1] == "auto"
+
+
+def test_set_reasoning_effort_is_per_session(agent: ACPSessionAgent, config_dir: Path, tmp_path: Path) -> None:
+    _write_chat_config(config_dir, effort="high", options=["low", "high", "max"])
+    first = asyncio.run(agent.new_session(cwd=str(tmp_path))).session_id
+    second = asyncio.run(agent.new_session(cwd=str(tmp_path))).session_id
+
+    response = asyncio.run(agent.set_config_option("reasoning_effort", first, "low"))
+
+    assert response.config_options[0].current_value == "low"
+    assert agent._sessions[first].reasoning_effort == "low"
+    assert agent._sessions[second].reasoning_effort is None
+    assert agent._client._sessions[first].agent.reasoning_effort_override == "low"
+    assert agent._client._sessions[second].agent.reasoning_effort_override is None
+    assert agent._client._sessions[first].agent._resolve_turn_config().chat.reasoning_effort == "low"
+    assert agent._client._sessions[second].agent._resolve_turn_config().chat.reasoning_effort == "high"
+    meta = json.loads((config_dir / "acp-sessions.json").read_text())
+    assert meta[first]["reasoning_effort"] == "low"
+
+
+def test_set_reasoning_effort_auto_clears_provider_effort(
+    agent: ACPSessionAgent, config_dir: Path, tmp_path: Path
+) -> None:
+    _write_chat_config(config_dir, effort="high", options=["low", "high", "max"])
+    session_id = asyncio.run(agent.new_session(cwd=str(tmp_path))).session_id
+
+    asyncio.run(agent.set_config_option("reasoning_effort", session_id, "auto"))
+
+    embedded = agent._client._sessions[session_id].agent
+    assert embedded.reasoning_effort_override == "auto"
+    assert embedded._resolve_turn_config().chat.reasoning_effort is None
+
+
+def test_set_reasoning_effort_rejects_unadvertised_value(
+    agent: ACPSessionAgent, config_dir: Path, tmp_path: Path
+) -> None:
+    _write_chat_config(config_dir, effort="high", options=["low", "high", "max"])
+    session_id = asyncio.run(agent.new_session(cwd=str(tmp_path))).session_id
+
+    with pytest.raises(RequestError):
+        asyncio.run(agent.set_config_option("reasoning_effort", session_id, "medium"))
+
+
+def test_title_skips_client_instruction_blocks() -> None:
+    assert _title_from("<t3_code_instructions>be nice</t3_code_instructions> Fix calc") == "Fix calc"
+    wrapped = (
+        "<t3_code_instructions>be nice</t3_code_instructions> "
+        "<user_request>Fix calc</user_request> <runtime_info>ignore me</runtime_info>"
+    )
+    assert _title_from(wrapped) == "Fix calc"
+
+
+def test_metadata_save_merges_records_from_other_servers(config_dir: Path) -> None:
+    first = _SessionRecord(cwd="/one", updated_at="2026-01-01T00:00:00+00:00")
+    _save_session_meta({"s1": first})
+    stale_snapshot = _load_session_meta()
+    second = _SessionRecord(cwd="/two", updated_at="2026-01-01T00:00:02+00:00")
+    _save_session_meta({"s2": second})
+
+    updated = _SessionRecord(cwd="/one", title="updated", updated_at="2026-01-01T00:00:03+00:00")
+    _save_session_meta({**stale_snapshot, "s1": updated})
+
+    meta = json.loads((config_dir / "acp-sessions.json").read_text())
+    assert set(meta) == {"s1", "s2"}
+    assert meta["s1"]["title"] == "updated"
+
+
+def test_list_sessions_sees_metadata_from_other_servers(
+    agent: ACPSessionAgent, config_dir: Path, tmp_path: Path
+) -> None:
+    (config_dir / "sessions").mkdir(parents=True, exist_ok=True)
+    (config_dir / "sessions" / "other.json").write_text("{}")
+    other = _SessionRecord(cwd=str(tmp_path), title="Other", updated_at="2026-01-01T00:00:00+00:00")
+    _save_session_meta({**agent._sessions, "other": other})
+
+    response = asyncio.run(agent.list_sessions(cwd=str(tmp_path)))
+
+    assert "other" in {info.session_id for info in response.sessions}
 
 
 def test_prompt_streams_text_reasoning_and_tools(
@@ -207,6 +344,26 @@ def test_failed_tool_reports_failure(agent: ACPSessionAgent, tmp_path: Path, mon
     progress = [update for _, update in conn.updates if isinstance(update, ToolCallProgress)]
     assert progress[0].status == "failed"
     assert progress[0].raw_output == "missing"
+
+
+def test_completed_tool_with_failure_reports_failed(
+    agent: ACPSessionAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session_id = asyncio.run(agent.new_session(cwd=str(tmp_path))).session_id
+    turn = FakeTurn(
+        [
+            _event("tool.call_start", tool_name="read_file", tool_id="t3", arguments={"path": "missing"}),
+            _event("tool.call_complete", tool_name="read_file", tool_id="t3", success=False),
+            TurnEvent.transition("turn-1", TurnStatus.COMPLETED),
+        ]
+    )
+    monkeypatch.setattr(agent._client.services.session_service, "submit", _submit(turn))
+
+    asyncio.run(agent.prompt(session_id, [TextContentBlock(text="read")]))
+
+    conn: FakeConn = agent._conn  # type: ignore[assignment]
+    progress = [update for _, update in conn.updates if isinstance(update, ToolCallProgress)]
+    assert progress[0].status == "failed"
 
 
 def test_prompt_failure_returns_refusal(
@@ -329,6 +486,40 @@ def test_prompt_text_flattens_blocks() -> None:
     )
 
     assert text == "look here\n\n[README](file:///README.md)"
+
+
+def test_default_client_keeps_stdout_for_protocol(config_dir: Path) -> None:
+    acp_agent = ACPSessionAgent()
+
+    assert acp_agent._client._console is not None
+    assert acp_agent._client._console.stderr is True
+
+
+def test_embedded_client_passes_console_to_agents(services: ApplicationServices, tmp_path: Path) -> None:
+    console = Console(stderr=True)
+    client = EmbeddedClient(services=services, console=console)
+
+    asyncio.run(client.create_session(cwd=str(tmp_path), session_id="console-test"))
+
+    assert client._sessions["console-test"].agent.console is console
+    asyncio.run(client.close())
+
+
+def test_run_acp_agent_routes_tool_ui_to_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyAgent:
+        async def close(self) -> None:
+            pass
+
+    async def fake_run_agent(agent: Any) -> None:
+        del agent
+
+    monkeypatch.setattr(acp_server, "ACPSessionAgent", lambda **kwargs: DummyAgent())
+    monkeypatch.setattr(acp_server, "run_agent", fake_run_agent)
+    monkeypatch.setattr(ui, "console", ui.console)
+
+    asyncio.run(acp_server.run_acp_agent())
+
+    assert ui.console.stderr is True
 
 
 def _submit(turn: FakeTurn) -> Any:

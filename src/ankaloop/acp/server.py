@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import json
 import logging
+import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from acp import (
@@ -41,8 +44,11 @@ from acp.schema import (
     PromptCapabilities,
     ResourceLink,
     SessionCapabilities,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
     SessionInfo,
     SessionListCapabilities,
+    SetSessionConfigOptionResponse,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
@@ -51,10 +57,13 @@ from acp.schema import (
     UsageUpdate,
     UserMessageChunk,
 )
+from rich.console import Console
 
 from .. import __version__
 from ..client.embedded import EmbeddedClient
+from ..config import ChatConfig, load_config
 from ..constants import CONFIG_DIR
+from ..llm import REASONING_EFFORT_LEVELS, normalize_reasoning_effort
 from ..runtime import TurnEvent
 from ..session_store import SessionStore
 
@@ -89,6 +98,26 @@ _TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 _FLUSH_INTERVAL = 0.1
 """Seconds between streaming flushes of buffered model output."""
 
+_LOCK_MODULE = importlib.import_module("msvcrt" if os.name == "nt" else "fcntl")
+
+
+def _lock_file(handle: Any) -> None:
+    """Take an exclusive advisory lock on an open metadata file."""
+    if os.name == "nt":  # pragma: no cover - exercised on Windows only
+        handle.seek(0)
+        _LOCK_MODULE.locking(handle.fileno(), _LOCK_MODULE.LK_LOCK, 1)
+    else:
+        _LOCK_MODULE.flock(handle.fileno(), _LOCK_MODULE.LOCK_EX)
+
+
+def _unlock_file(handle: Any) -> None:
+    """Release the advisory lock taken by :func:`_lock_file`."""
+    if os.name == "nt":  # pragma: no cover - exercised on Windows only
+        handle.seek(0)
+        _LOCK_MODULE.locking(handle.fileno(), _LOCK_MODULE.LK_UNLCK, 1)
+    else:
+        _LOCK_MODULE.flock(handle.fileno(), _LOCK_MODULE.LOCK_UN)
+
 
 @dataclass(slots=True)
 class _SessionRecord:
@@ -97,6 +126,8 @@ class _SessionRecord:
     cwd: str
     title: str | None = None
     updated_at: str | None = None
+    # None inherits the global config; "auto" clears the provider's effort.
+    reasoning_effort: str | None = None
 
 
 class _TurnStream:
@@ -154,7 +185,13 @@ class _TurnStream:
         elif event.type.startswith("tool.call_"):
             await self.flush()
             name = str(event.data.get("tool_name", "tool"))
-            completed = event.type == "tool.call_complete"
+            status: Literal["completed", "failed"]
+            if event.type == "tool.call_complete":
+                # A completed call can still be a failed tool invocation.
+                succeeded = bool(event.data.get("success", True))
+                status = "completed" if succeeded else "failed"
+            else:
+                status = "failed"
             await self._agent.send_update(
                 self._session_id,
                 ToolCallProgress(
@@ -162,8 +199,8 @@ class _TurnStream:
                     title=name,
                     name=name,
                     kind=_tool_kind(name),
-                    status="completed" if completed else "failed",
-                    raw_output=event.data.get("error") if not completed else None,
+                    status=status,
+                    raw_output=event.data.get("error") if status == "failed" else None,
                 ),
             )
         elif event.type == "llm.usage":
@@ -222,7 +259,8 @@ class ACPSessionAgent(Agent):  # type: ignore[abstract]
 
     def __init__(self, *, agent_name: str | None = None, client: EmbeddedClient | None = None):
         self._agent_name = agent_name
-        self._client = client or EmbeddedClient()
+        # stdout is the JSON-RPC transport, so agent diagnostics must go to stderr.
+        self._client = client or EmbeddedClient(console=Console(stderr=True))
         self._conn: Client | None = None
         self._sessions: dict[str, _SessionRecord] = _load_session_meta()
         self._active: dict[str, TurnHandle] = {}
@@ -250,7 +288,8 @@ class ACPSessionAgent(Agent):  # type: ignore[abstract]
             agent_info=Implementation(name="ankaloop", title="AnkaLoop", version=__version__),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
-                prompt_capabilities=PromptCapabilities(image=True, embedded_context=True),
+                # Prompts reach the runtime as text, so image blocks are only placeholders.
+                prompt_capabilities=PromptCapabilities(image=False, embedded_context=True),
                 session_capabilities=SessionCapabilities(list=SessionListCapabilities()),
             ),
         )
@@ -267,9 +306,10 @@ class ACPSessionAgent(Agent):  # type: ignore[abstract]
         session_id = uuid4().hex
         await self._client.connect()
         await self._client.create_session(cwd=cwd, agent_name=self._agent_name, session_id=session_id)
-        self._sessions[session_id] = _SessionRecord(cwd=cwd, updated_at=_now())
+        record = _SessionRecord(cwd=cwd, updated_at=_now())
+        self._sessions[session_id] = record
         _save_session_meta(self._sessions)
-        return NewSessionResponse(session_id=session_id)
+        return NewSessionResponse(session_id=session_id, config_options=[_reasoning_config_option(record)])
 
     async def load_session(
         self,
@@ -291,15 +331,22 @@ class ACPSessionAgent(Agent):  # type: ignore[abstract]
                 await self.send_update(session_id, UserMessageChunk(content=TextContentBlock(text=content)))
             elif message.get("role") == "assistant":
                 await self.send_update(session_id, AgentMessageChunk(content=TextContentBlock(text=content)))
-        self._sessions[session_id].updated_at = _now()
+        record = self._sessions[session_id]
+        record.updated_at = _now()
         _save_session_meta(self._sessions)
-        return LoadSessionResponse()
+        self._apply_reasoning_effort(session_id, record)
+        return LoadSessionResponse(config_options=[_reasoning_config_option(record)])
 
     async def list_sessions(
         self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any
     ) -> ListSessionsResponse:
         """List ACP sessions that still have a stored transcript."""
         del cursor, kwargs
+        # Other server processes may have recorded sessions since startup.
+        for session_id, record in _load_session_meta().items():
+            current = self._sessions.get(session_id)
+            if current is None or (record.updated_at or "") > (current.updated_at or ""):
+                self._sessions[session_id] = record
         root = _normalize(cwd) if cwd else None
         sessions = []
         for session_id, record in sorted(
@@ -330,9 +377,11 @@ class ACPSessionAgent(Agent):  # type: ignore[abstract]
         record = self._sessions.get(session_id)
         if record is None or not await self._attach(session_id, record.cwd):
             raise RequestError.invalid_params({"sessionId": session_id})
+        self._apply_reasoning_effort(session_id, record)
         self._cancel_requested.discard(session_id)
         content = _prompt_text(prompt)
-        if record.title is None and content.strip():
+        # Older sessions persisted a title taken from client instruction tags.
+        if (not record.title or record.title.startswith("<")) and content.strip():
             record.title = _title_from(content)
         record.updated_at = _now()
         _save_session_meta(self._sessions)
@@ -370,6 +419,35 @@ class ACPSessionAgent(Agent):  # type: ignore[abstract]
             return PromptResponse(stop_reason="cancelled", usage=stream.usage)
         return PromptResponse(stop_reason="end_turn", usage=stream.usage)
 
+    async def set_config_option(
+        self, config_id: str, session_id: str, value: str | bool, **kwargs: Any
+    ) -> SetSessionConfigOptionResponse:
+        """Apply a per-session configuration change from the client."""
+        del kwargs
+        if config_id != "reasoning_effort":
+            raise RequestError.invalid_params({"configId": config_id})
+        record = self._sessions.get(session_id)
+        if record is None or not await self._attach(session_id, record.cwd):
+            raise RequestError.invalid_params({"sessionId": session_id})
+        if not isinstance(value, str):
+            raise RequestError.invalid_params({"configId": config_id, "value": value})
+        try:
+            selected = normalize_reasoning_effort(value) or "auto"
+        except ValueError as exc:
+            raise RequestError.invalid_params({"configId": config_id, "value": value}) from exc
+        try:
+            allowed = set(_reasoning_effort_values(load_config().chat))
+        except Exception:  # pragma: no cover - config failures surface on the turn
+            logger.debug("Could not load reasoning effort options", exc_info=True)
+            allowed = set(REASONING_EFFORT_LEVELS)
+        if selected not in allowed:
+            raise RequestError.invalid_params({"configId": config_id, "value": value, "allowed": sorted(allowed)})
+        record.reasoning_effort = selected
+        record.updated_at = _now()
+        _save_session_meta(self._sessions)
+        self._apply_reasoning_effort(session_id, record)
+        return SetSessionConfigOptionResponse(config_options=[_reasoning_config_option(record)])
+
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         """Stop the session's active turn; its prompt answers ``cancelled``."""
         del kwargs
@@ -391,6 +469,12 @@ class ACPSessionAgent(Agent):  # type: ignore[abstract]
         if self._conn is None:
             return
         await self._conn.session_update(session_id, update)
+
+    def _apply_reasoning_effort(self, session_id: str, record: _SessionRecord) -> None:
+        """Bind the session's effort override to its embedded agent."""
+        embedded = self._client._sessions.get(session_id)
+        if embedded is not None:
+            embedded.agent.reasoning_effort_override = record.reasoning_effort
 
     async def _attach(self, session_id: str, cwd: str | None) -> bool:
         """Bind an embedded session to a stored transcript, or reuse it."""
@@ -481,9 +565,83 @@ def _tool_title(name: str, arguments: Any) -> str:
     return name
 
 
+_REASONING_EFFORT_LABELS = {
+    "none": "None",
+    "minimal": "Minimal",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "xhigh": "XHigh",
+    "max": "Max",
+    "auto": "Auto (provider default)",
+}
+
+
+def _reasoning_effort_values(chat: ChatConfig | None) -> list[str]:
+    """Return the effort values the active provider accepts."""
+    configured = list(chat.reasoning_effort_options or []) if chat else []
+    values = [value for value in configured if value != "auto"]
+    if not values:
+        values = sorted(REASONING_EFFORT_LEVELS - {"auto"})
+    if "auto" not in values:
+        values.append("auto")
+    return values
+
+
+def _session_reasoning_effort(record: _SessionRecord, chat: ChatConfig | None) -> str:
+    """Return the effort this session will actually use."""
+    if record.reasoning_effort is not None:
+        return record.reasoning_effort
+    raw = chat.reasoning_effort if chat else None
+    if not raw:
+        return "auto"
+    try:
+        return normalize_reasoning_effort(raw) or "auto"
+    except ValueError:
+        return str(raw).strip().lower() or "auto"
+
+
+def _reasoning_config_option(record: _SessionRecord) -> SessionConfigOptionSelect:
+    """Describe the session's reasoning effort for ACP clients."""
+    try:
+        chat = load_config().chat
+    except Exception:  # pragma: no cover - config failures surface on the turn
+        logger.debug("Could not load reasoning effort options", exc_info=True)
+        chat = None
+    values = _reasoning_effort_values(chat)
+    current = _session_reasoning_effort(record, chat)
+    if current not in values:
+        values.insert(0, current)
+    return SessionConfigOptionSelect(
+        type="select",
+        id="reasoning_effort",
+        name="Reasoning effort",
+        description="Reasoning effort for this session; Auto uses the provider default.",
+        current_value=current,
+        category="thought_level",
+        options=[
+            SessionConfigSelectOption(value=value, name=_REASONING_EFFORT_LABELS.get(value, value.title()))
+            for value in values
+        ],
+    )
+
+
 def _title_from(content: str) -> str:
     """Derive a short session title from the first prompt."""
     first = " ".join(content.split())
+    # Some clients wrap the real request in a tag next to their instructions.
+    match = re.search(r"<user_request>(.*?)</user_request>", first, re.IGNORECASE)
+    if match:
+        first = match.group(1).strip()
+    else:
+        # Otherwise skip leading wire-instruction tags such as
+        # ``<t3_code_instructions>...</t3_code_instructions>``.
+        while first.startswith("<"):
+            close = first.find("</")
+            end = first.find(">", close)
+            if close < 0 or end < 0:
+                break
+            first = first[end + 1 :].strip()
     return first if len(first) <= 60 else first[:57] + "..."
 
 
@@ -506,29 +664,55 @@ def _load_session_meta() -> dict[str, _SessionRecord]:
         return records
     for session_id, value in data.items():
         if isinstance(value, dict) and isinstance(value.get("cwd"), str):
+            reasoning_effort = value.get("reasoning_effort")
             records[session_id] = _SessionRecord(
                 cwd=value["cwd"],
                 title=value.get("title"),
                 updated_at=value.get("updated_at"),
+                reasoning_effort=reasoning_effort if isinstance(reasoning_effort, str) else None,
             )
     return records
 
 
 def _save_session_meta(sessions: dict[str, _SessionRecord]) -> None:
-    """Persist ACP session metadata atomically."""
+    """Persist ACP session metadata, merging records written by other servers.
+
+    Editor clients can run several ACP server processes at once, one per
+    session. A plain atomic replace would drop sessions another process saved
+    after this process loaded the file, so merge under an exclusive lock.
+    """
     path = _session_meta_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        session_id: {"cwd": record.cwd, "title": record.title, "updated_at": record.updated_at}
-        for session_id, record in sessions.items()
-    }
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    temporary.replace(path)
+    with path.with_suffix(".lock").open("a+", encoding="utf-8") as lock:
+        _lock_file(lock)
+        try:
+            merged = _load_session_meta()
+            for session_id, record in sessions.items():
+                current = merged.get(session_id)
+                if current is None or (record.updated_at or "") >= (current.updated_at or ""):
+                    merged[session_id] = record
+            payload = {
+                session_id: {
+                    "cwd": record.cwd,
+                    "title": record.title,
+                    "updated_at": record.updated_at,
+                    "reasoning_effort": record.reasoning_effort,
+                }
+                for session_id, record in merged.items()
+            }
+            temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            temporary.replace(path)
+        finally:
+            _unlock_file(lock)
 
 
 async def run_acp_agent(*, agent_name: str | None = None) -> None:
     """Serve ACP over stdio until the client disconnects."""
+    # stdout is the JSON-RPC transport; the tool-progress UI must not write to it.
+    from .. import ui
+
+    ui.console = Console(stderr=True)
     agent = ACPSessionAgent(agent_name=agent_name)  # type: ignore[abstract]
     try:
         await run_agent(agent)

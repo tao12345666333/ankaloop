@@ -166,6 +166,9 @@ active_provider = "primary"
 api_type = "openai"
 base_url = "https://api.example.com/v1"
 model = "provider/model-name"
+reasoning_effort = "high"
+# Levels this provider accepts; ACP clients render these in their reasoning picker.
+reasoning_effort_options = ["low", "high", "max"]
 ```
 
 Keep credentials out of version control and provide the key through the environment:
@@ -189,6 +192,8 @@ retry_base_delay_seconds = 0.5
 # Reasoning effort for models that support it:
 # none | minimal | low | medium | high | xhigh | max (unset or "auto" = provider default).
 # Can also be set per provider profile or through ANKA_REASONING_EFFORT.
+# Provider profiles can additionally declare reasoning_effort_options; ACP
+# clients expose that list as a per-session picker.
 reasoning_effort = "high"
 # Keep model reasoning on a separate channel (default): stream APIs emit `reasoning`
 # frames and responses carry `reasoning_content`. Set true to restore the legacy
@@ -343,6 +348,10 @@ sessions. Register it as a custom agent, for example in Zed's `settings.json`:
 Each ACP session maps to one AnkaLoop session: prompts stream text, reasoning, tool calls, and
 context usage back to the client, `session/load` replays the stored conversation, and cancelling
 a prompt stops the running turn.
+
+When the active provider declares `reasoning_effort_options`, ACP clients can also show a
+per-session reasoning effort picker. Changing it only affects that session and is persisted with
+the session metadata; the global provider configuration stays untouched.
 
 ## Telegram
 
